@@ -40,6 +40,7 @@ use crate::{
     audio::{self, Audio},
     config::Config,
     panel::{self, Panel},
+    settings::{self, SettingsWindow},
 };
 
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -74,6 +75,7 @@ struct TrayState {
     config: RefCell<Config>,
     menu_open: Cell<bool>,
     panel: RefCell<Box<Panel>>,
+    settings: RefCell<Box<SettingsWindow>>,
     config_path: PathBuf,
     icon: HICON,
     taskbar_created: u32,
@@ -89,6 +91,7 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
         config: RefCell::new(config),
         menu_open: Cell::new(false),
         panel: RefCell::new(Box::new(Panel::new())),
+        settings: RefCell::new(Box::new(SettingsWindow::new(config_path.clone()))),
         config_path,
         icon,
         taskbar_created,
@@ -96,6 +99,7 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
 
     let module = unsafe { GetModuleHandleW(None).map_err(error)? };
     panel::register_window_class(HINSTANCE(module.0))?;
+    settings::register_window_class(HINSTANCE(module.0), state.icon)?;
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW).map_err(error)? };
     let class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -227,6 +231,7 @@ unsafe extern "system" fn window_proc(
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
         if !state.is_null() {
             (*state).panel.borrow_mut().close();
+            (*state).settings.borrow_mut().close();
         }
         let data = icon_data(hwnd, HICON::default());
         let _ = Shell_NotifyIconW(NIM_DELETE, &data);
@@ -402,7 +407,10 @@ impl TrayState {
             LEGACY_SOUND_SETTINGS => launch(hwnd, "ms-settings:sound", "")?,
             LEGACY_MODERN_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
             VOLUME_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
-            SETTINGS => launch(hwnd, "ms-settings:sound", "")?,
+            SETTINGS => {
+                let settings = self.settings.borrow_mut().open()?;
+                SettingsWindow::show(settings);
+            }
             EXIT => unsafe {
                 DestroyWindow(hwnd).map_err(error)?;
             },

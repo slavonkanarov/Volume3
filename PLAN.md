@@ -8,7 +8,7 @@ The [Volume² repository](https://github.com/irzyxa/Volume2) may be used as a re
 
 ## Current state
 
-The first implementation now has a Windows tray icon with a left-click volume panel, a right-click playback-device menu, Windows sound shortcuts, and Exit. The menu saves a selected device in the active profile. A separate tray executable avoids a console window; the CLI remains available. The Windows target builds and Rust tests pass. The panel, menu, Windows Legacy submenu, Exit action, and reselecting the current output device were checked at runtime on Windows 11. The master slider was tested with a reversible 1% change; switching to another device and adjusting application sliders still need verification.
+The first implementation now has a Windows tray icon with a left-click volume panel, a right-click playback-device menu, Windows sound shortcuts, a small dark settings window with a sign-in startup switch, and Exit. The menu saves a selected device in the active profile. A separate tray executable avoids a console window; the CLI remains available. The Windows target builds and Rust tests pass. The panel, menu, Windows Legacy submenu, Exit action, and reselecting the current output device were checked at runtime on Windows 11. The master slider was tested with a reversible 1% change; switching to another device and adjusting application sliders still need verification.
 
 The full settings window, hooks, OSD, and complete profile behavior are still planned. Follow the stages below while keeping the first version small.
 
