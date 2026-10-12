@@ -54,4 +54,4 @@ jobs:
             target/package/*.exe
             target/package/LICENSE
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
