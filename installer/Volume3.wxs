@@ -12,13 +12,21 @@
     <StandardDirectory Id="PerUserProgramFilesFolder">
       <Directory Id="INSTALLFOLDER" Name="Volume3">
         <Component Id="TrayExecutable" Guid="67617DC8-1D7F-42EE-A106-B8469C49EDB0">
-          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes" />
+          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" />
+          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="TrayExecutable"
+                         Type="integer" Value="1" KeyPath="yes" />
+          <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+          <RemoveFolder Id="RemovePerUserProgramFilesFolder" Directory="PerUserProgramFilesFolder" On="uninstall" />
         </Component>
         <Component Id="CliExecutable" Guid="A70F1D29-FE6F-4EA9-9D38-C33DF40D1277">
-          <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" KeyPath="yes" />
+          <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" />
+          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="CliExecutable"
+                         Type="integer" Value="1" KeyPath="yes" />
         </Component>
         <Component Id="LicenseFile" Guid="6D6DB8CF-438C-407A-92F1-3F038D3957E7">
-          <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+          <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" />
+          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="LicenseFile"
+                         Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
