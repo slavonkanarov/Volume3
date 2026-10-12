@@ -1,0 +1,45 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Volume3"
+           Manufacturer="Volume3"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="51C13508-AAE9-4FA7-8FF7-33694E890351"
+           Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Volume3 is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="Volume3.ico" SourceFile="$(var.RepoDir)\assets\volume3.ico" />
+    <Property Id="ARPPRODUCTICON" Value="Volume3.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Volume3">
+        <Component Id="TrayExecutable" Guid="9141B61B-5413-4924-8F89-DED98212171B">
+          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="CliExecutable" Guid="0E718B42-A6C0-4DB9-8FF2-F3251C47B2F0">
+          <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="LicenseFile" Guid="E0F0EA13-F66C-4715-A5D1-BC85821B5E63">
+          <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuEntry" Guid="CD1C0BBA-C8FF-4F4C-9FA4-5A55750DD3C9">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Volume3"
+                  Description="Volume3 audio controls"
+                  Target="[INSTALLFOLDER]volume3-tray.exe"
+                  Icon="Volume3.ico"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\Volume3" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Volume3" Level="1">
+      <ComponentRef Id="TrayExecutable" />
+      <ComponentRef Id="CliExecutable" />
+      <ComponentRef Id="LicenseFile" />
+      <ComponentRef Id="StartMenuEntry" />
+    </Feature>
+  </Package>
+</Wix>

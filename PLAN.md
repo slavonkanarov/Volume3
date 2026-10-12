@@ -15,7 +15,7 @@ The full settings window, hooks, OSD, and complete profile behavior are still pl
 ## Product decisions
 
 - Target Windows 11 only.
-- Ship a portable executable. No installer or system service is required for normal use.
+- Ship a portable executable and an optional per-user MSI. No system service is required for normal use.
 - Offer a tray interface, a compact control panel, a full settings window, and a CLI.
 - Keep mouse controls, hotkeys, and indicator appearance global.
 - Keep profiles focused on the selected output device and volume levels.

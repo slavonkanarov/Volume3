@@ -23,6 +23,12 @@ Left click the tray icon to open the purple volume panel at the right edge of th
 
 Settings are stored in `volume3.json` beside the executable when changed. Both programs accept `--config PATH` before the command, or before launching the tray, to use another location. Neither program creates a service, registry entry, or AppData file.
 
+## Windows MSI build on GitHub Actions
+
+The [Windows MSI workflow](.github/workflows/windows-msi.yml) runs on pushes and can also be started manually from the Actions tab. It builds and tests the Rust project on a Windows x64 runner, creates a per-user MSI, and uploads `volume3-windows-x64` with the MSI, both executables, and the license. The artifact is retained for seven days.
+
+The MSI installs into the current user's Programs directory and adds a Start menu shortcut. It needs no administrator rights. Volume3 keeps its portable `volume3.json` beside the installed executable, so the same executable also works without the installer. The package does not start Volume3 automatically after installation.
+
 ## Current limits
 
 The Windows target builds, and the Rust tests pass on Linux. The left-click panel, right-click menu, Windows Legacy submenu, Exit action, and reselecting the current output device were checked at runtime on Windows 11. The master and application sliders were checked with reversible 1% changes. Switching to a different output device still needs runtime verification. Default-device switching uses an isolated, undocumented `IPolicyConfig` call; errors appear in the tray interface. The full control panel, hotkeys, mouse controls, on-screen indicators, and richer profile editing remain planned in [PLAN.md](PLAN.md).
