@@ -13,7 +13,11 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Volume3">
         <Component Id="TrayExecutable" Guid="861D5651-A04E-44C4-B5B6-EFF1A175C5C8">
-          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes" />
+          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes">
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Advertise="yes"
+                      Name="Volume3" Description="Volume3 audio controls"
+                      Icon="Volume3.ico" WorkingDirectory="INSTALLFOLDER" />
+          </File>
           <File Id="InstalledMarker" Source="$(var.RepoDir)\installer\installed.marker" Name="volume3.installed" />
           <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         </Component>
@@ -25,24 +29,12 @@
         </Component>
       </Directory>
     </StandardDirectory>
-    <StandardDirectory Id="ProgramMenuFolder">
-      <Component Id="StartMenuEntry" Guid="7749693C-BD08-4D3A-867E-0A1062FC08B7">
-        <Shortcut Id="StartMenuShortcut"
-                  Name="Volume3"
-                  Description="Volume3 audio controls"
-                  Target="[INSTALLFOLDER]volume3-tray.exe"
-                  Icon="Volume3.ico"
-                  WorkingDirectory="INSTALLFOLDER" />
-        <RegistryValue Root="HKLM" Key="Software\Volume3" Name="StartMenuShortcut"
-                       Type="integer" Value="1" KeyPath="yes" />
-      </Component>
-    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="MainFeature" Title="Volume3" Level="1">
       <ComponentRef Id="TrayExecutable" />
       <ComponentRef Id="CliExecutable" />
       <ComponentRef Id="LicenseFile" />
-      <ComponentRef Id="StartMenuEntry" />
     </Feature>
   </Package>
 </Wix>
