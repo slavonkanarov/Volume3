@@ -9,21 +9,21 @@
     <Icon Id="Volume3.ico" SourceFile="$(var.RepoDir)\assets\volume3.ico" />
     <Property Id="ARPPRODUCTICON" Value="Volume3.ico" />
 
-    <StandardDirectory Id="ProgramFiles64Folder">
+    <StandardDirectory Id="PerUserProgramFilesFolder">
       <Directory Id="INSTALLFOLDER" Name="Volume3">
-        <Component Id="TrayExecutable" Guid="9141B61B-5413-4924-8F89-DED98212171B">
+        <Component Id="TrayExecutable" Guid="67617DC8-1D7F-42EE-A106-B8469C49EDB0">
           <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes" />
         </Component>
-        <Component Id="CliExecutable" Guid="0E718B42-A6C0-4DB9-8FF2-F3251C47B2F0">
+        <Component Id="CliExecutable" Guid="A70F1D29-FE6F-4EA9-9D38-C33DF40D1277">
           <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" KeyPath="yes" />
         </Component>
-        <Component Id="LicenseFile" Guid="E0F0EA13-F66C-4715-A5D1-BC85821B5E63">
+        <Component Id="LicenseFile" Guid="6D6DB8CF-438C-407A-92F1-3F038D3957E7">
           <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
-      <Component Id="StartMenuEntry" Guid="CD1C0BBA-C8FF-4F4C-9FA4-5A55750DD3C9">
+      <Component Id="StartMenuEntry" Guid="2DFB5333-2F9A-4E96-980D-866E549CBD97">
         <Shortcut Id="StartMenuShortcut"
                   Name="Volume3"
                   Description="Volume3 audio controls"
