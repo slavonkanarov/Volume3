@@ -8,9 +8,9 @@ The [Volume² repository](https://github.com/irzyxa/Volume2) may be used as a re
 
 ## Current state
 
-The first implementation now has a Windows tray icon with a playback-device menu, master-volume steps, mute control, and Exit. The menu saves a selected device in the active profile. A separate tray executable avoids a console window; the CLI remains available. Windows-target `cargo check` and Rust tests pass, but audio and tray behavior have not yet been tested at runtime on Windows 11.
+The first implementation now has a Windows tray icon with a left-click volume panel, a right-click playback-device menu, Windows sound shortcuts, and Exit. The menu saves a selected device in the active profile. A separate tray executable avoids a console window; the CLI remains available. The Windows target builds and Rust tests pass. The panel, menu, Windows Legacy submenu, Exit action, and reselecting the current output device were checked at runtime on Windows 11. The master slider was tested with a reversible 1% change; switching to another device and adjusting application sliders still need verification.
 
-The compact panel, full settings window, hooks, OSD, and complete profile behavior are still planned. Follow the stages below while keeping the first version small.
+The full settings window, hooks, OSD, and complete profile behavior are still planned. Follow the stages below while keeping the first version small.
 
 ## Product decisions
 
@@ -38,8 +38,8 @@ If a saved device is unavailable, skip that device, report it clearly, and prese
 
 ### Tray and compact panel
 
-- Left-click opens a small panel with the active profile, output device, master volume, and mute control.
-- The tray menu switches profiles directly and provides Settings and Exit.
+- Left-click opens a compact panel with the output device, master volume, and application sliders.
+- The right-click tray menu switches output devices and provides Windows sound shortcuts and Exit.
 - The mouse wheel over the tray icon adjusts volume when enabled.
 
 ### Main window

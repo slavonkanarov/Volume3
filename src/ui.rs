@@ -7,22 +7,30 @@ use std::{
 use windows::{
     core::{w, PCWSTR},
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{
+            CreateSolidBrush, DeleteObject, DrawTextW, FillRect, SetBkMode, SetTextColor,
+            DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HGDIOBJ, TRANSPARENT,
+        },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED, ODT_MENU},
             Shell::{
-                Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-                NOTIFYICONDATAW,
+                ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
+                NIM_DELETE, NOTIFYICONDATAW,
             },
             WindowsAndMessaging::{
-                AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
-                DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW,
-                GetCursorPos, GetMessageW, GetWindowLongPtrW, MessageBoxW, PostQuitMessage,
-                RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW,
-                TrackPopupMenu, TranslateMessage, GWLP_USERDATA, HICON, LR_DEFAULTCOLOR,
-                MB_ICONERROR, MB_OK, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
-                TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_LBUTTONUP,
-                WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
+                CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+                DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
+                GetMenuItemCount, GetMessageW, GetWindowLongPtrW, InsertMenuItemW, LoadCursorW,
+                MessageBoxW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+                SetForegroundWindow, SetMenuInfo, SetWindowLongPtrW, TrackPopupMenu,
+                TranslateMessage, GWLP_USERDATA, HICON, IDC_ARROW, LR_DEFAULTCOLOR, MB_ICONERROR,
+                MB_OK, MENUINFO, MENUITEMINFOW, MFS_DISABLED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE,
+                MIIM_ID, MIIM_STATE, MIIM_SUBMENU, MIM_BACKGROUND, MIM_STYLE, MNS_NOCHECK, MSG,
+                SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY,
+                WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM, WM_RBUTTONUP, WNDCLASSEXW,
+                WS_OVERLAPPED,
             },
         },
     },
@@ -31,19 +39,41 @@ use windows::{
 use crate::{
     audio::{self, Audio},
     config::Config,
+    panel::{self, Panel},
 };
 
 const TRAY_MESSAGE: u32 = WM_APP + 1;
-const VOLUME_UP: u32 = 1;
-const VOLUME_DOWN: u32 = 2;
-const MUTE: u32 = 3;
 const EXIT: u32 = 4;
 const FIRST_DEVICE: u32 = 100;
+const LEGACY_MIXER: u32 = 5;
+const LEGACY_PLAYBACK: u32 = 6;
+const LEGACY_RECORDING: u32 = 7;
+const LEGACY_SOUNDS: u32 = 8;
+const LEGACY_SOUND_SETTINGS: u32 = 9;
+const LEGACY_MODERN_MIXER: u32 = 10;
+const VOLUME_MIXER: u32 = 11;
+const SETTINGS: u32 = 12;
+
+#[derive(Clone, Copy)]
+enum MenuStyle {
+    Separator,
+    Device,
+    Action,
+    Submenu,
+    Disabled,
+}
+
+struct MenuEntry {
+    label: Vec<u16>,
+    style: MenuStyle,
+    checked: bool,
+}
 
 struct TrayState {
     audio: Audio,
     config: RefCell<Config>,
     menu_open: Cell<bool>,
+    panel: RefCell<Box<Panel>>,
     config_path: PathBuf,
     icon: HICON,
     taskbar_created: u32,
@@ -58,16 +88,20 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
         audio,
         config: RefCell::new(config),
         menu_open: Cell::new(false),
+        panel: RefCell::new(Box::new(Panel::new())),
         config_path,
         icon,
         taskbar_created,
     });
 
     let module = unsafe { GetModuleHandleW(None).map_err(error)? };
+    panel::register_window_class(HINSTANCE(module.0))?;
+    let cursor = unsafe { LoadCursorW(None, IDC_ARROW).map_err(error)? };
     let class = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         lpfnWndProc: Some(window_proc),
         hInstance: HINSTANCE(module.0),
+        hCursor: cursor,
         lpszClassName: w!("Volume3TrayWindow"),
         ..Default::default()
     };
@@ -148,10 +182,35 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_MEASUREITEM {
+        let item = &mut *(lparam.0 as *mut MEASUREITEMSTRUCT);
+        if item.CtlType == ODT_MENU && item.itemData != 0 {
+            let entry = &*(item.itemData as *const MenuEntry);
+            item.itemWidth = 296;
+            item.itemHeight = match entry.style {
+                MenuStyle::Separator => 12,
+                MenuStyle::Device | MenuStyle::Action | MenuStyle::Submenu => 34,
+                MenuStyle::Disabled => 33,
+            };
+            return LRESULT(1);
+        }
+    }
+    if message == WM_DRAWITEM {
+        let item = &*(lparam.0 as *const DRAWITEMSTRUCT);
+        if item.CtlType == ODT_MENU && item.itemData != 0 {
+            draw_menu_entry(item);
+            return LRESULT(1);
+        }
+    }
     if message == TRAY_MESSAGE && matches!(lparam.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
         if !state.is_null() {
-            if let Err(e) = (*state).open_menu(hwnd) {
+            let result = if lparam.0 as u32 == WM_LBUTTONUP {
+                (*state).toggle_panel()
+            } else {
+                (*state).open_menu(hwnd)
+            };
+            if let Err(e) = result {
                 show_error(hwnd, &e);
             }
         }
@@ -165,6 +224,10 @@ unsafe extern "system" fn window_proc(
         return LRESULT(0);
     }
     if message == WM_DESTROY {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
+        if !state.is_null() {
+            (*state).panel.borrow_mut().close();
+        }
         let data = icon_data(hwnd, HICON::default());
         let _ = Shell_NotifyIconW(NIM_DELETE, &data);
         PostQuitMessage(0);
@@ -174,7 +237,21 @@ unsafe extern "system" fn window_proc(
 }
 
 impl TrayState {
+    fn toggle_panel(&self) -> Result<(), String> {
+        let hwnd = {
+            let mut panel = self.panel.borrow_mut();
+            if panel.is_open() {
+                panel.close();
+                return Ok(());
+            }
+            panel.open(&self.audio, self.icon)?
+        };
+        Panel::show(hwnd);
+        Ok(())
+    }
+
     fn open_menu(&self, hwnd: HWND) -> Result<(), String> {
+        self.panel.borrow_mut().close();
         if self.menu_open.replace(true) {
             return Ok(());
         }
@@ -185,57 +262,107 @@ impl TrayState {
 
     fn show_menu(&self, hwnd: HWND) -> Result<(), String> {
         *self.config.borrow_mut() = Config::load(&self.config_path)?;
-        let devices = self.audio.devices(audio::output_flow())?;
-        let state = self.audio.state(None, audio::output_flow()).ok();
+        let mut devices = self.audio.devices(audio::output_flow())?;
+        devices.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
         let menu = unsafe { CreatePopupMenu().map_err(error)? };
+        let background = unsafe { CreateSolidBrush(rgb(27, 26, 34)) };
+        if background.0.is_null() {
+            unsafe {
+                let _ = DestroyMenu(menu);
+            }
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let menu_info = MENUINFO {
+            cbSize: size_of::<MENUINFO>() as u32,
+            fMask: MIM_BACKGROUND | MIM_STYLE,
+            dwStyle: MNS_NOCHECK,
+            hbrBack: background,
+            ..Default::default()
+        };
+        let mut entries: Vec<Box<MenuEntry>> = Vec::new();
         let result = (|| {
-            let headline = match state {
-                Some(v) => format!(
-                    "Volume3  •  {}%{}",
-                    v.percent,
-                    if v.muted { "  •  muted" } else { "" }
-                ),
-                None => "Volume3  •  no active output".into(),
-            };
-            menu_item(menu, MF_STRING | MF_GRAYED, 0, &headline)?;
-            menu_item(menu, MF_SEPARATOR, 0, "")?;
-            menu_item(menu, MF_STRING | MF_GRAYED, 0, "Playback devices")?;
+            unsafe {
+                SetMenuInfo(menu, &menu_info).map_err(error)?;
+            }
             if devices.is_empty() {
-                menu_item(menu, MF_STRING | MF_GRAYED, 0, "No devices found")?;
+                menu_item(
+                    menu,
+                    &mut entries,
+                    MenuStyle::Disabled,
+                    0,
+                    "No devices found",
+                    false,
+                )?;
             }
             for (index, device) in devices.iter().enumerate() {
-                let flags = if device.is_default {
-                    MF_STRING | MF_CHECKED
-                } else {
-                    MF_STRING
-                };
-                menu_item(menu, flags, FIRST_DEVICE + index as u32, &device.name)?;
+                menu_item(
+                    menu,
+                    &mut entries,
+                    MenuStyle::Device,
+                    FIRST_DEVICE + index as u32,
+                    &device.name,
+                    device.is_default,
+                )?;
             }
             if let Some(saved) = &self.config.borrow().active().output_device {
                 if !devices.iter().any(|device| &device.id == saved) {
                     menu_item(
                         menu,
-                        MF_STRING | MF_GRAYED,
+                        &mut entries,
+                        MenuStyle::Disabled,
                         0,
                         "Saved device is unavailable",
+                        false,
                     )?;
                 }
             }
-            menu_item(menu, MF_SEPARATOR, 0, "")?;
-            menu_item(menu, MF_STRING, VOLUME_UP, "Volume +5%")?;
-            menu_item(menu, MF_STRING, VOLUME_DOWN, "Volume -5%")?;
+            menu_item(menu, &mut entries, MenuStyle::Separator, 0, "", false)?;
+            let legacy = unsafe { CreatePopupMenu().map_err(error)? };
+            if let Err(e) = unsafe { SetMenuInfo(legacy, &menu_info).map_err(error) } {
+                unsafe {
+                    let _ = DestroyMenu(legacy);
+                }
+                return Err(e);
+            }
+            if let Err(e) = submenu_item(menu, &mut entries, legacy, "Windows Legacy") {
+                unsafe {
+                    let _ = DestroyMenu(legacy);
+                }
+                return Err(e);
+            }
+            for (id, label) in [
+                (LEGACY_MIXER, "Volume Mixer"),
+                (LEGACY_PLAYBACK, "Playback devices"),
+                (LEGACY_RECORDING, "Recording devices"),
+                (LEGACY_SOUNDS, "Sounds"),
+                (LEGACY_SOUND_SETTINGS, "Sound settings"),
+                (LEGACY_MODERN_MIXER, "Volume mixer"),
+            ] {
+                menu_item(legacy, &mut entries, MenuStyle::Action, id, label, false)?;
+            }
+            menu_item(menu, &mut entries, MenuStyle::Separator, 0, "", false)?;
             menu_item(
                 menu,
-                MF_STRING,
-                MUTE,
-                if state.is_some_and(|v| v.muted) {
-                    "Unmute"
-                } else {
-                    "Mute"
-                },
+                &mut entries,
+                MenuStyle::Action,
+                VOLUME_MIXER,
+                "Volume Mixer",
+                false,
             )?;
-            menu_item(menu, MF_SEPARATOR, 0, "")?;
-            menu_item(menu, MF_STRING, EXIT, "Exit")?;
+            menu_item(
+                menu,
+                &mut entries,
+                MenuStyle::Action,
+                SETTINGS,
+                "Settings",
+                false,
+            )?;
+            menu_item(menu, &mut entries, MenuStyle::Action, EXIT, "Exit", false)?;
 
             let mut point = POINT::default();
             unsafe {
@@ -256,6 +383,7 @@ impl TrayState {
         })();
         unsafe {
             let _ = DestroyMenu(menu);
+            let _ = DeleteObject(HGDIOBJ(background.0));
         }
         result
     }
@@ -267,15 +395,14 @@ impl TrayState {
         devices: &[audio::Device],
     ) -> Result<(), String> {
         match choice {
-            VOLUME_UP => {
-                self.audio.change_volume(5)?;
-            }
-            VOLUME_DOWN => {
-                self.audio.change_volume(-5)?;
-            }
-            MUTE => {
-                self.audio.toggle_mute(audio::output_flow())?;
-            }
+            LEGACY_MIXER => launch(hwnd, "SndVol.exe", "")?,
+            LEGACY_PLAYBACK => launch(hwnd, "control.exe", "mmsys.cpl,,0")?,
+            LEGACY_RECORDING => launch(hwnd, "control.exe", "mmsys.cpl,,1")?,
+            LEGACY_SOUNDS => launch(hwnd, "control.exe", "mmsys.cpl,,2")?,
+            LEGACY_SOUND_SETTINGS => launch(hwnd, "ms-settings:sound", "")?,
+            LEGACY_MODERN_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
+            VOLUME_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
+            SETTINGS => launch(hwnd, "ms-settings:sound", "")?,
             EXIT => unsafe {
                 DestroyWindow(hwnd).map_err(error)?;
             },
@@ -298,12 +425,177 @@ impl TrayState {
 
 fn menu_item(
     menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
-    flags: windows::Win32::UI::WindowsAndMessaging::MENU_ITEM_FLAGS,
+    entries: &mut Vec<Box<MenuEntry>>,
+    style: MenuStyle,
     id: u32,
     label: &str,
+    checked: bool,
 ) -> Result<(), String> {
-    let text = wide(label);
-    unsafe { AppendMenuW(menu, flags, id as usize, PCWSTR(text.as_ptr())).map_err(error) }
+    let entry = Box::new(MenuEntry {
+        label: label.encode_utf16().collect(),
+        style,
+        checked,
+    });
+    let disabled = matches!(style, MenuStyle::Separator | MenuStyle::Disabled);
+    let info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_STATE,
+        fType: MFT_OWNERDRAW,
+        fState: if disabled {
+            MFS_DISABLED
+        } else {
+            Default::default()
+        },
+        wID: id,
+        dwItemData: (&*entry as *const MenuEntry) as usize,
+        ..Default::default()
+    };
+    unsafe {
+        InsertMenuItemW(menu, next_menu_position(menu)?, true, &info).map_err(error)?;
+    }
+    entries.push(entry);
+    Ok(())
+}
+
+fn next_menu_position(menu: windows::Win32::UI::WindowsAndMessaging::HMENU) -> Result<u32, String> {
+    let count = unsafe { GetMenuItemCount(Some(menu)) };
+    if count < 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(count as u32)
+    }
+}
+
+fn submenu_item(
+    menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    entries: &mut Vec<Box<MenuEntry>>,
+    submenu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+    label: &str,
+) -> Result<(), String> {
+    let entry = Box::new(MenuEntry {
+        label: label.encode_utf16().collect(),
+        style: MenuStyle::Submenu,
+        checked: false,
+    });
+    let info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_SUBMENU,
+        fType: MFT_OWNERDRAW,
+        hSubMenu: submenu,
+        dwItemData: (&*entry as *const MenuEntry) as usize,
+        ..Default::default()
+    };
+    unsafe {
+        InsertMenuItemW(menu, next_menu_position(menu)?, true, &info).map_err(error)?;
+    }
+    entries.push(entry);
+    Ok(())
+}
+
+fn launch(hwnd: HWND, target: &str, parameters: &str) -> Result<(), String> {
+    let file = wide(target);
+    let args = wide(parameters);
+    let result = unsafe {
+        ShellExecuteW(
+            Some(hwnd),
+            w!("open"),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(args.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as usize;
+    if code <= 32 {
+        Err(format!(
+            "Cannot open {target}: ShellExecuteW returned {code}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+unsafe fn draw_menu_entry(item: &DRAWITEMSTRUCT) {
+    let entry = &*(item.itemData as *const MenuEntry);
+    let hovered = (item.itemState.0 & ODS_SELECTED.0) != 0;
+    let background = if hovered
+        && matches!(
+            entry.style,
+            MenuStyle::Action | MenuStyle::Device | MenuStyle::Submenu
+        ) {
+        rgb(65, 47, 77)
+    } else if entry.checked {
+        rgb(44, 36, 53)
+    } else {
+        rgb(27, 26, 34)
+    };
+    let brush = CreateSolidBrush(background);
+    FillRect(item.hDC, &item.rcItem, brush);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    if matches!(entry.style, MenuStyle::Separator) {
+        let y = (item.rcItem.top + item.rcItem.bottom) / 2;
+        let line = RECT {
+            left: item.rcItem.left + 18,
+            top: y,
+            right: item.rcItem.right - 18,
+            bottom: y + 1,
+        };
+        let brush = CreateSolidBrush(rgb(58, 53, 65));
+        FillRect(item.hDC, &line, brush);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+        return;
+    }
+    let _ = SetBkMode(item.hDC, TRANSPARENT);
+    if entry.checked {
+        let check: Vec<u16> = "✓".encode_utf16().collect();
+        draw_menu_text(
+            item,
+            &check,
+            item.rcItem.left + 15,
+            item.rcItem.left + 37,
+            rgb(195, 140, 229),
+        );
+    }
+    let (left, color) = match entry.style {
+        MenuStyle::Disabled => (42, rgb(143, 137, 151)),
+        MenuStyle::Device => (42, rgb(246, 242, 249)),
+        MenuStyle::Action | MenuStyle::Submenu => (42, rgb(246, 242, 249)),
+        MenuStyle::Separator => unreachable!(),
+    };
+    draw_menu_text(
+        item,
+        &entry.label,
+        item.rcItem.left + left,
+        item.rcItem.right - 16,
+        color,
+    );
+}
+
+unsafe fn draw_menu_text(
+    item: &DRAWITEMSTRUCT,
+    text: &[u16],
+    left: i32,
+    right: i32,
+    color: COLORREF,
+) {
+    let _ = SetTextColor(item.hDC, color);
+    let mut rect = RECT {
+        left,
+        top: item.rcItem.top,
+        right,
+        bottom: item.rcItem.bottom,
+    };
+    let mut text = text.to_vec();
+    DrawTextW(
+        item.hDC,
+        &mut text,
+        &mut rect,
+        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+    );
+}
+
+fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
+    COLORREF(u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16))
 }
 
 fn add_icon(hwnd: HWND, icon: HICON) -> Result<(), String> {

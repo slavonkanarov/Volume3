@@ -1,5 +1,5 @@
 use crate::config::Profile;
-use std::{ffi::c_void, path::Path};
+use std::{collections::HashMap, ffi::c_void, path::Path};
 use windows::{
     core::{Interface, GUID, PCWSTR, PWSTR},
     Win32::{
@@ -45,6 +45,44 @@ pub struct VolumeState {
     pub left: u8,
     pub right: u8,
     pub peak: f32,
+}
+
+pub struct MasterControl(IAudioEndpointVolume);
+
+impl MasterControl {
+    pub fn set_volume(&self, value: u8) -> Result<(), String> {
+        if value > 100 {
+            return Err("volume must be 0..100".into());
+        }
+        unsafe {
+            self.0
+                .SetMasterVolumeLevelScalar(value as f32 / 100.0, &GUID::zeroed())
+                .map_err(err)
+        }
+    }
+}
+
+pub struct MixerApp {
+    pub process: String,
+    pub pid: u32,
+    pub volume: u8,
+    controls: Vec<ISimpleAudioVolume>,
+}
+
+impl MixerApp {
+    pub fn set_volume(&self, value: u8) -> Result<(), String> {
+        if value > 100 {
+            return Err("volume must be 0..100".into());
+        }
+        for control in &self.controls {
+            unsafe {
+                control
+                    .SetMasterVolume(value as f32 / 100.0, &GUID::zeroed())
+                    .map_err(err)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct Audio {
@@ -150,6 +188,54 @@ impl Audio {
                 peak,
             })
         }
+    }
+
+    pub fn master_control(&self, id: &str) -> Result<MasterControl, String> {
+        self.endpoint(Some(id), eRender).map(MasterControl)
+    }
+
+    pub fn mixer_apps_on_device(&self, device_id: &str) -> Result<Vec<MixerApp>, String> {
+        let endpoint = unsafe {
+            self.enumerator
+                .GetDevice(PCWSTR(wide(device_id).as_ptr()))
+                .map_err(err)?
+        };
+        let manager: IAudioSessionManager2 =
+            unsafe { endpoint.Activate(CLSCTX_ALL, None).map_err(err)? };
+        let enumerator = unsafe { manager.GetSessionEnumerator().map_err(err)? };
+        let mut apps: Vec<MixerApp> = Vec::new();
+        let mut by_name: HashMap<String, usize> = HashMap::new();
+        for index in 0..unsafe { enumerator.GetCount().map_err(err)? } {
+            let control = unsafe { enumerator.GetSession(index).map_err(err)? };
+            let control2: IAudioSessionControl2 = match control.cast() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let pid = unsafe { control2.GetProcessId().map_err(err)? };
+            if pid == 0 {
+                continue;
+            }
+            let process = process_name(pid).unwrap_or_else(|| format!("PID {pid}"));
+            let volume: ISimpleAudioVolume = match control.cast() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let key = process.to_lowercase();
+            if let Some(&position) = by_name.get(&key) {
+                apps[position].controls.push(volume);
+            } else {
+                let level = unsafe { volume.GetMasterVolume().map_err(err)? };
+                by_name.insert(key, apps.len());
+                apps.push(MixerApp {
+                    process,
+                    pid,
+                    volume: percent(level),
+                    controls: vec![volume],
+                });
+            }
+        }
+        apps.sort_by_key(|app| app.process.to_lowercase());
+        Ok(apps)
     }
 
     pub fn set_volume(&self, id: Option<&str>, flow: EDataFlow, value: u8) -> Result<(), String> {
@@ -367,7 +453,7 @@ fn device_name(device: &IMMDevice) -> Result<String, String> {
     }
 }
 
-fn process_name(pid: u32) -> Option<String> {
+pub fn process_path(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
     }
@@ -386,10 +472,15 @@ fn process_name(pid: u32) -> Option<String> {
         if !ok {
             return None;
         }
-        Path::new(&String::from_utf16_lossy(&path[..len as usize]))
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
+        Some(String::from_utf16_lossy(&path[..len as usize]))
     }
+}
+
+fn process_name(pid: u32) -> Option<String> {
+    let path = process_path(pid)?;
+    Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 // Windows exposes no public desktop API for changing the default endpoint.
