@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, io::Write, path::Path};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -136,6 +141,34 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn default_path() -> Result<PathBuf, String> {
+        let executable = env::current_exe().map_err(|e| e.to_string())?;
+        let directory = executable
+            .parent()
+            .ok_or("executable has no parent directory")?;
+        let local_appdata = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        Self::path_for_executable(directory, local_appdata.as_deref())
+    }
+
+    fn path_for_executable(
+        directory: &Path,
+        local_appdata: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        if !directory.join("volume3.installed").is_file() {
+            return Ok(directory.join("volume3.json"));
+        }
+        let local_appdata = local_appdata.ok_or("LOCALAPPDATA is not set")?;
+        let path = local_appdata.join("Volume3").join("volume3.json");
+        let previous = local_appdata
+            .join("Programs")
+            .join("Volume3")
+            .join("volume3.json");
+        if !path.exists() && previous.is_file() {
+            Self::load(&previous)?.save(&path)?;
+        }
+        Ok(path)
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         if !path.exists() {
             return Ok(Self::default());
@@ -149,6 +182,12 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.validate()?;
         let data = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         let tmp = path.with_extension("json.tmp");
         let result = (|| {
             let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
@@ -264,6 +303,32 @@ mod tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("json.tmp"));
         let _ = fs::remove_dir(&folder);
+        result.unwrap();
+    }
+
+    #[test]
+    fn installed_config_migrates_existing_user_settings() {
+        let root =
+            std::env::temp_dir().join(format!("volume3-installed-config-{}", std::process::id()));
+        let result = (|| {
+            let installed = root.join("Program Files").join("Volume3");
+            fs::create_dir_all(&installed).map_err(|e| e.to_string())?;
+            fs::write(installed.join("volume3.installed"), "").map_err(|e| e.to_string())?;
+            let local_appdata = root.join("AppData").join("Local");
+            let previous = local_appdata
+                .join("Programs")
+                .join("Volume3")
+                .join("volume3.json");
+            let mut config = Config::default();
+            config.active_profile = "Cinema".into();
+            config.profiles.insert("Cinema".into(), Profile::default());
+            config.save(&previous)?;
+            let path = Config::path_for_executable(&installed, Some(&local_appdata))?;
+            assert_eq!(path, local_appdata.join("Volume3").join("volume3.json"));
+            assert_eq!(Config::load(&path)?.active_profile, "Cinema");
+            Ok::<(), String>(())
+        })();
+        let _ = fs::remove_dir_all(&root);
         result.unwrap();
     }
 

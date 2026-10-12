@@ -21,11 +21,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = match args.as_slice() {
-        [] => std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .parent()
-            .ok_or("executable has no parent directory")?
-            .join("volume3.json"),
+        [] => volume3::config::Config::default_path()?,
         [flag, path] if flag == "--config" => path.into(),
         _ => return Err("usage: volume3-tray [--config PATH]".into()),
     };

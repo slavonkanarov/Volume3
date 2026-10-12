@@ -3,42 +3,37 @@
            Manufacturer="Volume3"
            Version="$(var.ProductVersion)"
            UpgradeCode="51C13508-AAE9-4FA7-8FF7-33694E890351"
-           Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Volume3 is already installed." />
+           Scope="perMachine">
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of Volume3 is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="Volume3.ico" SourceFile="$(var.RepoDir)\assets\volume3.ico" />
     <Property Id="ARPPRODUCTICON" Value="Volume3.ico" />
 
-    <StandardDirectory Id="PerUserProgramFilesFolder">
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Volume3">
-        <Component Id="TrayExecutable" Guid="67617DC8-1D7F-42EE-A106-B8469C49EDB0">
-          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" />
-          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="TrayExecutable"
-                         Type="integer" Value="1" KeyPath="yes" />
+        <Component Id="TrayExecutable" Guid="861D5651-A04E-44C4-B5B6-EFF1A175C5C8">
+          <File Id="TrayExe" Source="$(var.BuildDir)\volume3-tray.exe" KeyPath="yes" />
+          <File Id="InstalledMarker" Source="$(var.RepoDir)\installer\installed.marker" Name="volume3.installed" />
           <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
-          <RemoveFolder Id="RemovePerUserProgramFilesFolder" Directory="PerUserProgramFilesFolder" On="uninstall" />
         </Component>
-        <Component Id="CliExecutable" Guid="A70F1D29-FE6F-4EA9-9D38-C33DF40D1277">
-          <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" />
-          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="CliExecutable"
-                         Type="integer" Value="1" KeyPath="yes" />
+        <Component Id="CliExecutable" Guid="7E4251E3-8AF4-4FEC-9162-C21E328A1592">
+          <File Id="CliExe" Source="$(var.BuildDir)\volume3.exe" KeyPath="yes" />
         </Component>
-        <Component Id="LicenseFile" Guid="6D6DB8CF-438C-407A-92F1-3F038D3957E7">
-          <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" />
-          <RegistryValue Root="HKCU" Key="Software\Volume3\Installer" Name="LicenseFile"
-                         Type="integer" Value="1" KeyPath="yes" />
+        <Component Id="LicenseFile" Guid="4776D3DA-E17B-4B0B-88A0-51F1257F80A8">
+          <File Id="License" Source="$(var.RepoDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
-      <Component Id="StartMenuEntry" Guid="2DFB5333-2F9A-4E96-980D-866E549CBD97">
+      <Component Id="StartMenuEntry" Guid="7749693C-BD08-4D3A-867E-0A1062FC08B7">
         <Shortcut Id="StartMenuShortcut"
                   Name="Volume3"
                   Description="Volume3 audio controls"
                   Target="[INSTALLFOLDER]volume3-tray.exe"
                   Icon="Volume3.ico"
                   WorkingDirectory="INSTALLFOLDER" />
-        <RegistryValue Root="HKCU" Key="Software\Volume3" Name="StartMenuShortcut"
+        <RegistryValue Root="HKLM" Key="Software\Volume3" Name="StartMenuShortcut"
                        Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>

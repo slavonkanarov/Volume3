@@ -14,11 +14,7 @@ pub fn run() -> Result<(), String> {
         args.remove(0);
         path
     } else {
-        env::current_exe()
-            .map_err(|e| e.to_string())?
-            .parent()
-            .ok_or("executable has no parent directory")?
-            .join("volume3.json")
+        Config::default_path()?
     };
     if args.is_empty() || args[0] == "run" {
         return crate::ui::run_gui(config_path);

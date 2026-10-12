@@ -45,6 +45,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item -Path @('target\release\volume3-tray.exe', 'target\release\volume3.exe', 'LICENSE') -Destination 'target\package'
 
+      - name: Verify MSI installation and upgrade
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          $package = (Get-ChildItem target/package/*.msi -File).FullName
+          $previous = Join-Path $env:RUNNER_TEMP 'Volume3-previous.msi'
+          $repo = (Get-Location).Path
+          $release = (Resolve-Path target/release).Path
+          & "$env:RUNNER_TEMP\wix\wix.exe" build -arch x64 `
+            -d "ProductVersion=$version" -d "BuildDir=$release" -d "RepoDir=$repo" `
+            -o $previous installer/Volume3.wxs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($msi in @($previous, $package)) {
+            $process = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "MSI installation failed: $($process.ExitCode)" }
+          }
+          $directory = Join-Path $env:ProgramFiles 'Volume3'
+          foreach ($name in @('volume3-tray.exe', 'volume3.exe', 'volume3.installed')) {
+            if (-not (Test-Path (Join-Path $directory $name))) { throw "Missing installed file: $name" }
+          }
+          $registrations = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -eq 'Volume3' })
+          if ($registrations.Count -ne 1) { throw "Expected one Volume3 installation, found $($registrations.Count)" }
+          $process = Start-Process msiexec.exe -ArgumentList "/x `"$package`" /qn /norestart" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "MSI removal failed: $($process.ExitCode)" }
+
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
