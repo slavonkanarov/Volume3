@@ -1,4 +1,5 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Volume3"
            Manufacturer="Volume3"
            Version="$(var.ProductVersion)"
@@ -7,6 +8,13 @@
     <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of Volume3 is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <ui:WixUI Id="WixUI_Minimal" />
+    <UIRef Id="WixUI_ErrorProgressText" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.RepoDir)\installer\LICENSE.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.RepoDir)\installer\banner.png" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.RepoDir)\installer\dialog.png" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+              Value="Volume3 is installed. Open it from the Start menu." />
     <Icon Id="Volume3.ico" SourceFile="$(var.RepoDir)\assets\volume3.ico" />
     <Property Id="ARPPRODUCTICON" Value="Volume3.ico" />
 

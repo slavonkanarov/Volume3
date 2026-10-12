@@ -26,7 +26,11 @@ jobs:
 
       - name: Install WiX Toolset
         shell: pwsh
-        run: dotnet tool install wix --version 6.0.2 --tool-path "$env:RUNNER_TEMP\wix" --add-source https://api.nuget.org/v3/index.json
+        run: |
+          dotnet tool install wix --version 6.0.2 --tool-path "$env:RUNNER_TEMP\wix" --add-source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\wix\wix.exe" extension add -g WixToolset.UI.wixext/6.0.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build MSI and collect files
         shell: pwsh
@@ -37,12 +41,22 @@ jobs:
           $repo = (Get-Location).Path
           $release = (Resolve-Path target\release).Path
           New-Item -ItemType Directory -Force target\package | Out-Null
-          & "$env:RUNNER_TEMP\wix\wix.exe" build -arch x64 `
+          & "$env:RUNNER_TEMP\wix\wix.exe" build -arch x64 -culture en-US -ext WixToolset.UI.wixext/6.0.2 `
             -d "ProductVersion=$version" -d "BuildDir=$release" -d "RepoDir=$repo" `
             -o "target\package\Volume3-$version-x64.msi" installer\Volume3.wxs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\wix\wix.exe" msi validate "target\package\Volume3-$version-x64.msi"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.OpenDatabase((Resolve-Path "target\package\Volume3-$version-x64.msi").Path, 0)
+          $view = $database.OpenView('SELECT `Dialog` FROM `Dialog`')
+          $view.Execute()
+          $dialogs = @()
+          while ($record = $view.Fetch()) { $dialogs += $record.StringData(1) }
+          $view.Close()
+          foreach ($expected in @('WelcomeEulaDlg', 'ProgressDlg', 'ExitDialog')) {
+            if ($expected -notin $dialogs) { throw "Installer dialog is missing: $expected" }
+          }
           Copy-Item -Path @('target\release\volume3-tray.exe', 'target\release\volume3.exe', 'LICENSE') -Destination 'target\package'
 
       - name: Verify MSI installation and upgrade
@@ -54,7 +68,7 @@ jobs:
           $previous = Join-Path $env:RUNNER_TEMP 'Volume3-previous.msi'
           $repo = (Get-Location).Path
           $release = (Resolve-Path target/release).Path
-          & "$env:RUNNER_TEMP\wix\wix.exe" build -arch x64 `
+          & "$env:RUNNER_TEMP\wix\wix.exe" build -arch x64 -culture en-US -ext WixToolset.UI.wixext/6.0.2 `
             -d "ProductVersion=$version" -d "BuildDir=$release" -d "RepoDir=$repo" `
             -o $previous installer/Volume3.wxs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
