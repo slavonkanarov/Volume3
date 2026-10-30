@@ -364,7 +364,7 @@ impl TrayState {
                 &mut entries,
                 MenuStyle::Action,
                 SETTINGS,
-                "Settings",
+                "Settings…",
                 false,
             )?;
             menu_item(menu, &mut entries, MenuStyle::Action, EXIT, "Exit", false)?;

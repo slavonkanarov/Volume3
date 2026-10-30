@@ -21,7 +21,19 @@ Left click the tray icon to open the purple volume panel at the right edge of th
 .\target\release\volume3.exe volume set 35
 ```
 
-Portable builds store settings in `volume3.json` beside the executable. MSI installations store them in `%LocalAppData%\Volume3\volume3.json` so the installed application can run without administrator rights. Both programs accept `--config PATH` before the command, or before launching the tray, to use another location. The programs do not create a service or telemetry.
+Portable builds store settings in `volume3.json` beside the executable. System installations, whether made by MSI or the local script, store them in `%LocalAppData%\Volume3\volume3.json` so the installed application can run without administrator rights. Both programs accept `--config PATH` before the command, or before launching the tray, to use another location. The programs do not create a service or telemetry.
+
+## Install on this PC without MSI
+
+Exit Volume3 from the tray, then run this from a normal PowerShell session under your Windows account in the repository root on Windows 11. The script requests administrator permission through Windows UAC:
+
+```powershell
+.\scripts\install-local.ps1
+```
+
+The script builds the current source into both release executables and installs them with the icon, license, and README in `C:\Program Files\Volume3`. It removes any existing Volume3 MSI installation first, then creates an all-users Start menu shortcut and updates an existing current-user shortcut to point to the new tray executable. MSI is used only to remove an older MSI installation; WiX is not needed. The script needs the Rust MSVC toolchain, Visual Studio C++ Build Tools, and the Windows SDK. It does not start Volume3 or enable sign-in startup. Existing settings in `%LOCALAPPDATA%\Volume3\volume3.json` are preserved.
+
+Use `-Offline` when Cargo dependencies are already cached. To remove this script-based installation, exit Volume3, delete `C:\Program Files\Volume3` and the `Volume3.lnk` shortcuts from the all-users and current-user Start menus. Settings remain in `%LOCALAPPDATA%\Volume3` unless you remove them separately. The previous per-user copy in `%LOCALAPPDATA%\Programs\Volume3` is left untouched, but its Start menu shortcut is redirected to the system installation.
 
 ## Windows MSI build on GitHub Actions
 

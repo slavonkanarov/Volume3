@@ -32,10 +32,12 @@ use windows::{
 
 use crate::startup;
 
-const CLIENT_WIDTH: i32 = 480;
-const CLIENT_HEIGHT: i32 = 300;
-const CARD_TOP: i32 = 126;
-const CARD_BOTTOM: i32 = 216;
+const CLIENT_WIDTH: i32 = 760;
+const CLIENT_HEIGHT: i32 = 480;
+const SIDEBAR_WIDTH: i32 = 210;
+const CONTENT_LEFT: i32 = 238;
+const CARD_TOP: i32 = 150;
+const CARD_BOTTOM: i32 = 248;
 
 pub struct SettingsWindow {
     hwnd: HWND,
@@ -184,113 +186,169 @@ impl SettingsWindow {
     }
 
     unsafe fn draw(&self, hdc: HDC, client: RECT) {
-        fill(hdc, client, rgb(24, 22, 29));
+        fill(hdc, client, rgb(20, 24, 32));
         fill(
             hdc,
             RECT {
-                bottom: 76,
+                right: SIDEBAR_WIDTH,
                 ..client
             },
-            rgb(61, 34, 74),
+            rgb(29, 35, 46),
         );
         fill(
             hdc,
             RECT {
-                right: 5,
-                bottom: 76,
+                top: client.bottom - 68,
                 ..client
             },
-            rgb(178, 84, 205),
+            rgb(29, 35, 46),
         );
         let _ = SetBkMode(hdc, TRANSPARENT);
         draw_text(
             hdc,
-            "Settings",
-            RECT {
-                left: 25,
-                top: 13,
-                right: client.right - 25,
-                bottom: 47,
-            },
-            self.title_font,
-            rgb(251, 247, 253),
-        );
-        draw_text(
-            hdc,
             "Volume3",
             RECT {
-                left: 26,
-                top: 48,
-                right: client.right - 25,
-                bottom: 70,
+                left: 20,
+                top: 20,
+                right: SIDEBAR_WIDTH - 20,
+                bottom: 54,
             },
-            self.body_font,
-            rgb(213, 187, 223),
+            self.title_font,
+            rgb(242, 246, 250),
         );
         draw_text(
             hdc,
-            "GENERAL",
+            "SETTINGS",
             RECT {
-                left: 27,
-                top: 92,
-                right: client.right - 26,
-                bottom: 116,
+                left: 21,
+                top: 58,
+                right: SIDEBAR_WIDTH - 20,
+                bottom: 82,
             },
             self.body_font,
-            rgb(181, 127, 204),
+            rgb(153, 167, 187),
         );
         rounded(
             hdc,
             RECT {
-                left: 24,
+                left: 12,
+                top: 110,
+                right: SIDEBAR_WIDTH - 12,
+                bottom: 152,
+            },
+            rgb(38, 68, 88),
+            9,
+        );
+        fill(
+            hdc,
+            RECT {
+                left: 12,
+                top: 116,
+                right: 16,
+                bottom: 146,
+            },
+            rgb(48, 126, 164),
+        );
+        draw_text(
+            hdc,
+            "General",
+            RECT {
+                left: 29,
+                top: 114,
+                right: SIDEBAR_WIDTH - 24,
+                bottom: 148,
+            },
+            self.label_font,
+            rgb(242, 246, 250),
+        );
+        draw_text(
+            hdc,
+            "General",
+            RECT {
+                left: CONTENT_LEFT,
+                top: 29,
+                right: client.right - 26,
+                bottom: 66,
+            },
+            self.title_font,
+            rgb(242, 246, 250),
+        );
+        draw_text(
+            hdc,
+            "App behavior and startup.",
+            RECT {
+                left: CONTENT_LEFT,
+                top: 68,
+                right: client.right - 26,
+                bottom: 96,
+            },
+            self.body_font,
+            rgb(153, 167, 187),
+        );
+        draw_text(
+            hdc,
+            "STARTUP",
+            RECT {
+                left: CONTENT_LEFT,
+                top: 117,
+                right: client.right - 26,
+                bottom: 145,
+            },
+            self.body_font,
+            rgb(153, 167, 187),
+        );
+        rounded(
+            hdc,
+            RECT {
+                left: CONTENT_LEFT,
                 top: CARD_TOP,
-                right: client.right - 24,
+                right: client.right - 26,
                 bottom: CARD_BOTTOM,
             },
             if self.hovered {
-                rgb(51, 44, 60)
+                rgb(41, 50, 64)
             } else {
-                rgb(42, 37, 49)
+                rgb(29, 35, 46)
             },
-            16,
+            10,
         );
         draw_text(
             hdc,
             "Start with Windows",
             RECT {
-                left: 44,
-                top: 147,
-                right: client.right - 114,
-                bottom: 177,
+                left: CONTENT_LEFT + 20,
+                top: 166,
+                right: client.right - 120,
+                bottom: 196,
             },
             self.label_font,
-            rgb(247, 244, 249),
+            rgb(242, 246, 250),
         );
         draw_text(
             hdc,
-            "Launch Volume3 when you sign in.",
+            "Launch Volume3 when you sign in to Windows.",
             RECT {
-                left: 44,
-                top: 177,
-                right: client.right - 114,
-                bottom: 205,
+                left: CONTENT_LEFT + 20,
+                top: 196,
+                right: client.right - 120,
+                bottom: 226,
             },
             self.body_font,
-            rgb(178, 169, 187),
+            rgb(153, 167, 187),
         );
         let track_left = client.right - 104;
         rounded(
             hdc,
             RECT {
                 left: track_left,
-                top: 154,
+                top: 171,
                 right: track_left + 58,
-                bottom: 184,
+                bottom: 201,
             },
             if self.autostart_enabled {
-                rgb(175, 78, 204)
+                rgb(48, 126, 164)
             } else {
-                rgb(100, 94, 110)
+                rgb(91, 105, 123)
             },
             30,
         );
@@ -301,7 +359,7 @@ impl SettingsWindow {
             } else {
                 track_left + 4
             },
-            158,
+            175,
             22,
             rgb(255, 255, 255),
         );
@@ -310,24 +368,36 @@ impl SettingsWindow {
             if self.autostart_enabled { "On" } else { "Off" },
             RECT {
                 left: track_left + 18,
-                top: 184,
+                top: 203,
                 right: track_left + 58,
-                bottom: 210,
+                bottom: 229,
             },
             self.body_font,
-            rgb(192, 183, 200),
+            rgb(153, 167, 187),
         );
         draw_text(
             hdc,
-            "More settings will appear here.",
+            "Volume3 starts in the notification area.",
             RECT {
-                left: 27,
-                top: 239,
+                left: CONTENT_LEFT,
+                top: 271,
                 right: client.right - 26,
-                bottom: 269,
+                bottom: 301,
             },
             self.body_font,
-            rgb(137, 129, 146),
+            rgb(153, 167, 187),
+        );
+        draw_text(
+            hdc,
+            "Changes are applied immediately.",
+            RECT {
+                left: CONTENT_LEFT,
+                top: client.bottom - 57,
+                right: client.right - 26,
+                bottom: client.bottom - 11,
+            },
+            self.body_font,
+            rgb(153, 167, 187),
         );
     }
 }
@@ -440,7 +510,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn in_card(x: i32, y: i32, width: i32) -> bool {
-    (24..width - 24).contains(&x) && (CARD_TOP..CARD_BOTTOM).contains(&y)
+    (CONTENT_LEFT..width - 26).contains(&x) && (CARD_TOP..CARD_BOTTOM).contains(&y)
 }
 
 fn font(size: i32, weight: i32) -> HFONT {
