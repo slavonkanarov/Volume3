@@ -37,7 +37,18 @@ Use `-Offline` when Cargo dependencies are already cached. To remove this script
 
 ## Windows MSI build on GitHub Actions
 
-The [Windows MSI workflow](.github/workflows/windows-msi.yml) runs on pushes and can also be started manually from the Actions tab. It builds and tests the Rust project on a Windows x64 runner, creates a per-machine MSI, and uploads `volume3-windows-x64` with the MSI, both executables, and the license. The Actions artifact is retained for 90 days. Successful builds from `main` are also published as separate prereleases on the [Releases page](https://github.com/slavonkanarov/Volume3/releases), with the MSI, both executables, and the license. Release downloads remain available after the Actions artifact expires.
+The [Windows MSI workflow](.github/workflows/windows-msi.yml) builds and tests on Windows x64 and uploads `volume3-windows-x64` with `Volume3-<version>-x64.msi`, both executables, and the license. Actions artifacts are kept for 90 days. Published downloads remain available on the [Releases page](https://github.com/slavonkanarov/Volume3/releases).
+
+`Cargo.toml` sets the minimum `major.minor.patch` version. The next patch is one higher than the highest stable tag in the current `major.minor` series, but never lower than the Cargo version. The workflow does not modify `Cargo.toml`.
+
+| Trigger | Version | Distribution |
+| --- | --- | --- |
+| Push to `main` | `<next version>` | Stable release with an automatic `v<version>` tag |
+| Push to `dev`, pull request, or manual run outside `release` | `<next version>-dev.<run number>` | Actions artifact only |
+| Push to `release` (optional) | `<next version>-rc.<run number>` | Actions artifact only |
+| Push a `v<version>` or `v<version>-rc.<number>` tag | Version from the tag | Stable release from `main` or prerelease from `release`, respectively |
+
+Pull requests target `dev`, `release`, or `main`. Manual runs on the `release` branch use the RC suffix and do not publish. The exact build version is displayed in **Settings → General**, at the bottom of the sidebar. Local builds use the version from `Cargo.toml`. Windows Installer uses only the numeric version, so an RC and its corresponding stable release have the same MSI upgrade version.
 
 When opened normally, the MSI shows a branded setup wizard with the license, installation progress, and a completion message. Silent installs with `/qn` remain available. The MSI requests administrator approval through Windows UAC, installs into `C:\Program Files\Volume3`, and adds a Start menu shortcut for all users. Later MSI builds replace the existing machine-wide installation. The previous 0.1.1 MSI used a per-user installation context, so Windows Installer cannot upgrade it in place: uninstall 0.1.1 once before installing 0.1.2 or newer. Volume3 copies existing settings from `%LocalAppData%\Programs\Volume3\volume3.json` to its new per-user settings path on first launch. The package does not start Volume3 automatically after installation or enable sign-in startup until the user turns it on in Settings.
 
