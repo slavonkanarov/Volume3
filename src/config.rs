@@ -128,11 +128,22 @@ pub struct Config {
     pub updates: UpdateSettings,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSettings {
+    pub check_automatically: bool,
     pub automatic_install: bool,
     pub include_prereleases: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            check_automatically: true,
+            automatic_install: false,
+            include_prereleases: false,
+        }
+    }
 }
 
 impl Default for Config {
@@ -293,6 +304,22 @@ fn replace_file(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_update_preferences_keep_automatic_checks_enabled() {
+        let config: Config = serde_json::from_str(
+            r#"{"updates":{"automatic_install":true,"include_prereleases":true}}"#,
+        )
+        .unwrap();
+        assert!(config.updates.check_automatically);
+        assert!(config.updates.automatic_install);
+        assert!(config.updates.include_prereleases);
+        let mut config = config;
+        config.updates.check_automatically = false;
+        let saved = serde_json::to_vec(&config).unwrap();
+        let loaded: Config = serde_json::from_slice(&saved).unwrap();
+        assert!(!loaded.updates.check_automatically);
+    }
 
     #[test]
     fn saving_replaces_existing_config() {

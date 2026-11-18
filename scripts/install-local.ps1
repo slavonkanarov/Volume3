@@ -1,5 +1,5 @@
 #requires -Version 5.1
-param([switch]$Offline)
+param([switch]$Offline, [switch]$SystemOnly)
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..").Path
@@ -9,40 +9,73 @@ if ($env:USERPROFILE -ne [Environment]::GetFolderPath('UserProfile')) {
 if (Get-Process volume3-tray, volume3 -ErrorAction SilentlyContinue) {
     throw 'Exit Volume3 from the tray before installing the new version.'
 }
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    if ($Offline) { $arguments += '-Offline' }
-    try {
-        $elevated = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $arguments `
-            -Verb RunAs -WorkingDirectory $repo -Wait -PassThru
-    } catch {
-        throw "Administrator permission was not granted: $($_.Exception.Message)"
-    }
-    if ($elevated.ExitCode -ne 0) {
-        throw "Elevated installation failed with exit code $($elevated.ExitCode). Run PowerShell as Administrator to see the error."
-    }
-    return
-}
-
 $installDir = Join-Path $env:ProgramFiles 'Volume3'
 $shortcutDir = [Environment]::GetFolderPath('CommonPrograms')
 $tray = Join-Path $installDir 'volume3-tray.exe'
 $cli = Join-Path $installDir 'volume3.exe'
 
+function Write-Installation {
+    Write-Host "Installed: $tray"
+    Write-Host "CLI: $cli"
+    Write-Host "Start menu shortcut: $(Join-Path $shortcutDir 'Volume3.lnk')"
+    Write-Host 'Existing settings in %LOCALAPPDATA%\Volume3 are preserved.'
+}
+
 Push-Location $repo
 try {
-    $buildArgs = @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--target-dir', "$repo\target")
-    if ($Offline) { $buildArgs += '--offline' }
-    & cargo +stable-x86_64-pc-windows-msvc @buildArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Build failed. Rust MSVC and Visual Studio C++ Build Tools with the Windows SDK are required.'
+    if (-not $SystemOnly) {
+        $metadata = & cargo +stable-x86_64-pc-windows-msvc metadata --no-deps --format-version 1 --locked --offline | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
+        $base = [version]($metadata.packages | Where-Object name -eq 'volume3').version
+        $patch = $base.Build
+        $tags = git -c "safe.directory=$($repo.Replace('\', '/'))" tag --list "v$($base.Major).$($base.Minor).*"
+        if ($LASTEXITCODE -ne 0) { throw 'git tag failed' }
+        $pattern = '^v' + [regex]::Escape("$($base.Major).$($base.Minor)") + '\.(0|[1-9][0-9]*)$'
+        foreach ($tag in $tags) {
+            if ($tag -cmatch $pattern) { $patch = [Math]::Max($patch, [long]$Matches[1] + 1) }
+        }
+        $buildArgs = @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '--target-dir', "$repo\target")
+        if ($Offline) { $buildArgs += '--offline' }
+        $previousBuildVersion = $env:VOLUME3_BUILD_VERSION
+        $buildVersion = "$($base.Major).$($base.Minor).$patch-dev"
+        try {
+            $env:VOLUME3_BUILD_VERSION = $buildVersion
+            Write-Host "Building Volume3 $env:VOLUME3_BUILD_VERSION"
+            & cargo +stable-x86_64-pc-windows-msvc @buildArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Build failed. Rust MSVC and Visual Studio C++ Build Tools with the Windows SDK are required.'
+            }
+        } finally {
+            $env:VOLUME3_BUILD_VERSION = $previousBuildVersion
+        }
     }
     $releaseDir = Join-Path $repo 'target\x86_64-pc-windows-msvc\release'
     foreach ($name in @('volume3-tray.exe', 'volume3.exe')) {
         if (-not (Test-Path -LiteralPath (Join-Path $releaseDir $name) -PathType Leaf)) {
             throw "Build did not produce $name"
         }
+    }
+    $reportedVersion = & (Join-Path $releaseDir 'volume3.exe') --version
+    if ($LASTEXITCODE -ne 0 -or (-not $SystemOnly -and $reportedVersion -ne "Volume3 $buildVersion")) {
+        throw "Built CLI reports an unexpected version: $reportedVersion (expected Volume3 $buildVersion)"
+    }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        if ($SystemOnly) { throw 'Administrator rights are required to install Volume3.' }
+        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-SystemOnly')
+        if ($Offline) { $arguments += '-Offline' }
+        try {
+            $elevated = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $arguments `
+                -Verb RunAs -WorkingDirectory $repo -WindowStyle Hidden -Wait -PassThru
+        } catch {
+            throw "Administrator permission was not granted: $($_.Exception.Message)"
+        }
+        if ($elevated.ExitCode -ne 0) {
+            throw "Elevated installation failed with exit code $($elevated.ExitCode). Run PowerShell as Administrator to see the error."
+        }
+        Write-Installation
+        return
     }
 
     $msiInstallations = @(Get-ItemProperty `
@@ -92,10 +125,7 @@ try {
         }
     }
 
-    Write-Host "Installed: $tray"
-    Write-Host "CLI: $cli"
-    Write-Host "Start menu shortcut: $($shortcutPaths[0])"
-    Write-Host 'Existing settings in %LOCALAPPDATA%\Volume3 are preserved.'
+    Write-Installation
 } finally {
     Pop-Location
 }

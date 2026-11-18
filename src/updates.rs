@@ -4,7 +4,11 @@ use std::{
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -21,6 +25,7 @@ use windows::{
 };
 
 use crate::{
+    config::UpdateSettings,
     releases::{self, Release, Update},
     BUILD_VERSION,
 };
@@ -31,34 +36,39 @@ const API: &str = "https://api.github.com/repos/slavonkanarov/Volume3/releases";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 
 pub enum Event {
-    Checked(std::result::Result<Option<Update>, String>, bool),
+    Checked(std::result::Result<Vec<Update>, String>, bool),
     Downloaded(std::result::Result<Downloaded, String>),
 }
 
 enum Pending {
-    Check(Job<Option<Update>>, bool),
+    Check(Job<Vec<Update>>, bool),
     Download(Job<Downloaded>),
 }
 
 pub struct Updater {
     executable: PathBuf,
-    installed: bool,
+    installed: Option<String>,
     pub supported: bool,
     pub available: Option<Update>,
     pub status: String,
+    pub releases: Vec<Update>,
+    pub selected: usize,
+    pub downloaded: Option<Downloaded>,
+    pub install_requested: bool,
     pending: Option<Pending>,
     next_check: Instant,
+    cancelled: Arc<AtomicBool>,
+    received: Arc<AtomicU64>,
+    total: u64,
 }
 
 impl Updater {
     pub fn new() -> std::io::Result<Self> {
         let executable = env::current_exe()?;
         let installed = msi_is_registered_for(&executable);
-        let supported = installed
-            || (!executable.with_file_name("volume3.installed").exists()
-                && !executable
-                    .file_name()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("volume3.exe")));
+        let supported = !executable
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("volume3.exe"));
         let now = Instant::now();
         Ok(Self {
             executable,
@@ -67,6 +77,13 @@ impl Updater {
             available: None,
             status: String::new(),
             pending: None,
+            releases: Vec::new(),
+            selected: 0,
+            downloaded: None,
+            install_requested: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            received: Arc::new(AtomicU64::new(0)),
+            total: 0,
             next_check: if env::var_os("VOLUME3_UPDATE_FAILED").is_some() {
                 now + CHECK_INTERVAL
             } else {
@@ -79,38 +96,109 @@ impl Updater {
         self.pending.is_some()
     }
 
-    pub fn check(&mut self, manual: bool, include_prereleases: bool) {
+    pub fn check(&mut self, manual: bool) {
         if !self.supported || self.busy() {
             return;
         }
-        let installed = self.installed;
+        let installed = self.installed.is_some();
+        self.cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = self.cancelled.clone();
+        self.downloaded = None;
         self.next_check = Instant::now() + CHECK_INTERVAL;
-        self.available = None;
         self.status = "Checking for updates...".into();
         self.pending = Some(Pending::Check(
-            worker(move || check(installed, include_prereleases)),
+            worker(move || check(installed, &cancelled)),
             manual,
         ));
     }
 
-    pub fn download(&mut self) {
-        if !self.busy() {
-            if let Some(update) = self.available.take() {
-                self.status = format!("Downloading {}...", update.version);
-                self.pending = Some(Pending::Download(worker(move || download(update))));
-            }
+    pub fn download(&mut self, update: Update) {
+        if self.busy() {
+            return;
+        }
+        let current = semver::Version::parse(BUILD_VERSION).expect("valid build version");
+        let downgrade = self.installed.is_some()
+            && (
+                update.version.major,
+                update.version.minor,
+                update.version.patch,
+            ) < (current.major, current.minor, current.patch);
+        let recovery = if downgrade {
+            let Some(recovery) = self
+                .releases
+                .iter()
+                .find(|release| release.version == current)
+            else {
+                self.status =
+                    "Downgrade requires the current version's recovery MSI in Releases.".into();
+                return;
+            };
+            recovery.assets.first().cloned()
+        } else {
+            None
+        };
+        self.cancelled = Arc::new(AtomicBool::new(false));
+        self.received = Arc::new(AtomicU64::new(0));
+        self.total = update.assets.iter().map(|asset| asset.size).sum::<u64>()
+            + recovery.as_ref().map_or(0, |asset| asset.size);
+        let cancelled = self.cancelled.clone();
+        let received = self.received.clone();
+        self.status = format!("Downloading {}...", update.version);
+        self.downloaded = None;
+        self.pending = Some(Pending::Download(worker(move || {
+            download(update, recovery, &cancelled, &received)
+        })));
+    }
+
+    pub fn cancel(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.pending = None;
+        self.downloaded = None;
+        self.install_requested = false;
+        self.status = "Cancelled.".into();
+    }
+
+    pub fn progress(&self) -> String {
+        if matches!(self.pending, Some(Pending::Download(_))) && self.total > 0 {
+            format!(
+                "{} {}%",
+                self.status,
+                self.received.load(Ordering::Relaxed) * 100 / self.total
+            )
+        } else {
+            self.status.clone()
         }
     }
 
-    pub fn tick(&mut self, include_prereleases: bool) -> Option<Event> {
+    pub fn select_available(&mut self, include_prereleases: bool) {
+        let current = semver::Version::parse(BUILD_VERSION).expect("valid build version");
+        self.available = self
+            .releases
+            .iter()
+            .find(|release| {
+                release.version.cmp_precedence(&current).is_gt()
+                    && (include_prereleases || release.version.pre.is_empty())
+            })
+            .cloned();
+        self.selected = self
+            .releases
+            .iter()
+            .position(|release| include_prereleases || release.version.pre.is_empty())
+            .unwrap_or(0);
+    }
+
+    pub fn tick(&mut self, preferences: &UpdateSettings) -> Option<Event> {
         let event = match &self.pending {
             Some(Pending::Check(job, manual)) => {
                 completed(job).map(|result| Event::Checked(result, *manual))
             }
             Some(Pending::Download(job)) => completed(job).map(Event::Downloaded),
             None => {
-                if Instant::now() >= self.next_check {
-                    self.check(false, include_prereleases);
+                if preferences.check_automatically
+                    && self.downloaded.is_none()
+                    && Instant::now() >= self.next_check
+                {
+                    self.check(false);
                 }
                 return None;
             }
@@ -132,7 +220,9 @@ impl Updater {
                 executable: &self.executable,
                 config: std::path::absolute(config)?,
                 process_id: std::process::id(),
-                installed: self.installed,
+                installed: self.installed.is_some(),
+                product: self.installed.as_deref(),
+                recovery: downloaded.recovery.as_ref(),
                 packages: &downloaded.packages,
             })?,
         )?;
@@ -210,12 +300,14 @@ fn client(timeout: Duration) -> Result<Client> {
         .build()?)
 }
 
-fn check(installed: bool, include_prereleases: bool) -> Result<Option<Update>> {
-    let current = semver::Version::parse(BUILD_VERSION)?;
+fn check(installed: bool, cancelled: &AtomicBool) -> Result<Vec<Update>> {
     let client = client(Duration::from_secs(30))?;
     let mut releases = Vec::new();
-    // The updater only needs recent releases, not a catalog of older versions.
+    // Bound the catalog to recent releases to keep checks and manual selection responsive.
     for page in 1..=3 {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
         let response = client
             .get(API)
             .query(&[("per_page", 100), ("page", page)])
@@ -235,12 +327,7 @@ fn check(installed: bool, include_prereleases: bool) -> Result<Option<Update>> {
             break;
         }
     }
-    Ok(releases::newest(
-        releases,
-        &current,
-        installed,
-        include_prereleases,
-    ))
+    Ok(releases::compatible(releases, installed))
 }
 
 #[derive(Serialize)]
@@ -250,17 +337,29 @@ struct Package {
 }
 
 pub struct Downloaded {
+    pub version: semver::Version,
     folder: TempDir,
     packages: Vec<Package>,
+    recovery: Option<Package>,
 }
 
-fn download(update: Update) -> Result<Downloaded> {
+fn download(
+    update: Update,
+    recovery: Option<releases::Asset>,
+    cancelled: &AtomicBool,
+    progress: &AtomicU64,
+) -> Result<Downloaded> {
     let client = client(Duration::from_secs(180))?;
     let folder = tempfile::Builder::new()
         .prefix("volume3-update-")
         .tempdir()?;
     let mut packages = Vec::new();
-    for asset in update.assets {
+    let recovery_name = recovery.as_ref().map(|asset| asset.name.clone());
+    let mut recovery_package = None;
+    for asset in update.assets.into_iter().chain(recovery) {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Cancelled".into());
+        }
         let sha256 = asset
             .sha256()
             .ok_or("Invalid release checksum")?
@@ -275,11 +374,15 @@ fn download(update: Update) -> Result<Downloaded> {
         let mut received = 0;
         let mut buffer = [0; 65536];
         loop {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("Cancelled".into());
+            }
             let count = response.read(&mut buffer)?;
             if count == 0 {
                 break;
             }
             received += count as u64;
+            progress.fetch_add(count as u64, Ordering::Relaxed);
             hash.update(&buffer[..count]);
             file.write_all(&buffer[..count])?;
         }
@@ -287,17 +390,27 @@ fn download(update: Update) -> Result<Downloaded> {
             return Err(format!("Download size or SHA-256 mismatch: {}", asset.name).into());
         }
         file.sync_all()?;
-        packages.push(Package {
+        let package = Package {
             name: asset.name,
             sha256,
-        });
+        };
+        if recovery_name.as_ref() == Some(&package.name) {
+            recovery_package = Some(package);
+        } else {
+            packages.push(package);
+        }
     }
-    Ok(Downloaded { folder, packages })
+    Ok(Downloaded {
+        version: update.version,
+        folder,
+        packages,
+        recovery: recovery_package,
+    })
 }
 
-fn msi_is_registered_for(executable: &Path) -> bool {
+fn msi_is_registered_for(executable: &Path) -> Option<String> {
     let Ok(executable) = executable.canonicalize() else {
-        return false;
+        return None;
     };
     // These are the package's UpgradeCode and tray component GUID in Volume3.wxs.
     let upgrade = w!("{51C13508-AAE9-4FA7-8FF7-33694E890351}");
@@ -327,10 +440,10 @@ fn msi_is_registered_for(executable: &Path) -> bool {
                     .is_ok_and(|path| path == executable)
             })
         {
-            return true;
+            return Some(String::from_utf16_lossy(&product[..38]));
         }
     }
-    false
+    None
 }
 
 #[derive(Serialize)]
@@ -339,5 +452,76 @@ struct InstallPlan<'a> {
     config: PathBuf,
     process_id: u32,
     installed: bool,
+    product: Option<&'a str>,
+    recovery: Option<&'a Package>,
     packages: &'a [Package],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabling_checks_prevents_startup_work_and_keeps_manual_results() {
+        let mut updater = Updater::new().unwrap();
+        updater.next_check = Instant::now();
+        let preferences = UpdateSettings {
+            check_automatically: false,
+            ..Default::default()
+        };
+        assert!(updater.tick(&preferences).is_none());
+        assert!(!updater.busy());
+        // A completed fake job exercises the manual event path without using the network.
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Ok(Vec::new())).unwrap();
+        updater.pending = Some(Pending::Check(receiver, true));
+        assert!(matches!(
+            updater.tick(&preferences),
+            Some(Event::Checked(Ok(_), true))
+        ));
+        assert!(!updater.busy());
+    }
+
+    #[test]
+    fn automatic_selection_excludes_older_versions_and_optional_prereleases() {
+        let mut updater = Updater::new().unwrap();
+        let current = semver::Version::parse(BUILD_VERSION).unwrap();
+        let stable = semver::Version::new(current.major, current.minor, current.patch + 1);
+        let prerelease = semver::Version::parse(&format!(
+            "{}.{}.{}-rc.1",
+            current.major,
+            current.minor,
+            current.patch + 2
+        ))
+        .unwrap();
+        updater.releases = [prerelease.clone(), stable.clone(), current]
+            .into_iter()
+            .map(|version| Update {
+                version,
+                assets: Vec::new(),
+                notes: String::new(),
+            })
+            .collect();
+        updater.select_available(false);
+        assert_eq!(updater.available.as_ref().unwrap().version, stable);
+        assert_eq!(updater.selected, 1);
+        updater.select_available(true);
+        assert_eq!(updater.available.as_ref().unwrap().version, prerelease);
+        updater.releases.drain(..2);
+        updater.select_available(true);
+        assert!(updater.available.is_none());
+    }
+
+    #[test]
+    fn msi_downgrade_without_recovery_never_starts_a_download() {
+        let mut updater = Updater::new().unwrap();
+        updater.installed = Some("{00000000-0000-0000-0000-000000000000}".into());
+        updater.download(Update {
+            version: semver::Version::new(0, 0, 0),
+            assets: Vec::new(),
+            notes: String::new(),
+        });
+        assert!(!updater.busy());
+        assert!(updater.status.contains("recovery MSI"));
+    }
 }

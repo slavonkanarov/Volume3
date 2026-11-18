@@ -6,6 +6,13 @@ use std::{env, path::PathBuf};
 
 pub fn run() -> Result<(), String> {
     let mut args: Vec<String> = env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("Volume3 {}", crate::BUILD_VERSION);
+        return Ok(());
+    }
     let config_path = if args.first().is_some_and(|arg| arg == "--config") {
         if args.len() < 2 {
             return Err("--config requires a path".into());
@@ -299,6 +306,7 @@ fn parse_percent(value: &str) -> Result<u8, String> {
 
 fn print_help() {
     println!("Volume3 — portable Windows 11 volume control");
+    println!("volume3 --version");
     println!("volume3 [--config PATH] run");
     println!("volume3 profile list|create NAME|use NAME|next|previous|save [NAME]|delete NAME");
     println!("volume3 profile set-device ID|set-device-volume ID 0..100|set-app-volume EXE 0..100");

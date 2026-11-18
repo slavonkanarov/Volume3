@@ -57,9 +57,66 @@ fn main() {
     }
     if ((Get-Content -LiteralPath $cli -Raw).Trim() -ne 'new CLI') { throw 'CLI not updated' }
     if ((Get-Content -LiteralPath $config -Raw).Trim() -ne '{"keep":true}') { throw 'Configuration was changed' }
+    if ((Get-Content -LiteralPath "$config.before-update" -Raw).Trim() -ne '{"keep":true}') { throw 'Configuration backup is missing' }
+
+    # Exercise the same helper functions without launching UAC or changing installed files.
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PSScriptRoot '../src/updates/install.ps1'), [ref]$tokens, [ref]$errors)
+    if ($errors) { throw ($errors | Out-String) }
+    foreach ($function in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+        . ([scriptblock]::Create($function.Extent.Text))
+    }
+    $folder = Join-Path $root 'packages'
+    $atomic = Join-Path $root 'atomic'
+    New-Item -ItemType Directory -Path $folder, $atomic | Out-Null
+    $packages = foreach ($name in @('volume3-tray.exe', 'volume3.exe')) {
+        Set-Content -LiteralPath (Join-Path $folder $name) -Value "new $name"
+        Set-Content -LiteralPath (Join-Path $atomic $name) -Value "old $name"
+        @{ name = $name; sha256 = (Get-FileHash -LiteralPath (Join-Path $folder $name)).Hash }
+    }
+    $plan = @{ executable = Join-Path $atomic 'volume3-tray.exe'; packages = @($packages); recovery = $null }
+    Assert-Packages
+    $plan.packages[0].sha256 = 'bad checksum'
+    $rejected = $false
+    try { Assert-Packages } catch { $rejected = $true }
+    if (-not $rejected) { throw 'A corrupt package was accepted' }
+
+    $locked = [IO.File]::Open((Join-Path $atomic 'volume3.exe'), 'Open', 'ReadWrite', 'None')
+    $rolledBack = $false
+    try { Install-Portable } catch { $rolledBack = $true } finally { $locked.Dispose() }
+    if (-not $rolledBack) { throw 'Replacing a locked CLI should fail' }
+    foreach ($name in @('volume3-tray.exe', 'volume3.exe')) {
+        if ((Get-Content -LiteralPath (Join-Path $atomic $name) -Raw).Trim() -ne "old $name") {
+            throw "Rollback did not preserve $name"
+        }
+    }
+    if (Get-ChildItem -LiteralPath $atomic -Filter '*.new') { throw 'Staged files were not cleaned up' }
+
+    # Reproduce the wrapped access-denied error from .NET, including the helper's rethrow.
+    $readonly = Join-Path $atomic 'volume3-tray.exe'
+    [IO.File]::SetAttributes($readonly, [IO.FileAttributes]::ReadOnly)
+    function Install-Portable {
+        try { [IO.File]::Copy((Join-Path $folder 'volume3-tray.exe'), $readonly, $true) }
+        catch { $failure = $_; throw $failure }
+    }
+    $script:elevations = 0
+    function Invoke-ElevatedUpdate { $script:elevations++ }
+    try { Install-Binaries } finally { [IO.File]::SetAttributes($readonly, [IO.FileAttributes]::Normal) }
+    if ($script:elevations -ne 1) { throw 'Wrapped access-denied error did not request elevation exactly once' }
+    function Install-Portable { throw [IO.IOException]::new('File is locked') }
+    $rejected = $false
+    try { Install-Binaries } catch { $rejected = $true }
+    if (-not $rejected -or $script:elevations -ne 1) { throw 'A file-lock failure incorrectly requested elevation' }
+    Write-Host 'Portable replacement, restart, backup, checksum rejection, rollback, and access-denied elevation passed.'
 } finally {
     foreach ($process in @($parent, $helper)) {
         if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+    }
+    $testParent = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+    if (-not [IO.Path]::GetFullPath($root).StartsWith($testParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a test directory outside $testParent"
     }
     Remove-Item -LiteralPath $root -Recurse -Force
 }

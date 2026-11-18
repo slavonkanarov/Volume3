@@ -17,6 +17,8 @@
               Value="Volume3 is installed. Open it from the Start menu." />
     <Icon Id="Volume3.ico" SourceFile="$(var.RepoDir)\assets\volume3.ico" />
     <Property Id="ARPPRODUCTICON" Value="Volume3.ico" />
+    <!-- Unversioned local EXEs can otherwise be mistaken for modified user data. -->
+    <Property Id="REINSTALLMODE" Value="amus" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Volume3">
