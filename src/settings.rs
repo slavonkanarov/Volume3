@@ -30,7 +30,7 @@ use windows::{
     },
 };
 
-use crate::startup;
+use crate::{startup, BUILD_VERSION};
 
 const CLIENT_WIDTH: i32 = 760;
 const CLIENT_HEIGHT: i32 = 480;
@@ -383,6 +383,18 @@ impl SettingsWindow {
                 top: 271,
                 right: client.right - 26,
                 bottom: 301,
+            },
+            self.body_font,
+            rgb(153, 167, 187),
+        );
+        draw_text(
+            hdc,
+            &format!("Version {BUILD_VERSION}"),
+            RECT {
+                left: 21,
+                top: client.bottom - 57,
+                right: SIDEBAR_WIDTH - 20,
+                bottom: client.bottom - 11,
             },
             self.body_font,
             rgb(153, 167, 187),

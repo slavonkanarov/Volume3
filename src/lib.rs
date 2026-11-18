@@ -1,5 +1,10 @@
 pub mod config;
 
+pub const BUILD_VERSION: &str = match option_env!("VOLUME3_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[cfg(windows)]
 pub mod app;
 #[cfg(windows)]
