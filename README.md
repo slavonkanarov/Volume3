@@ -50,6 +50,12 @@ The [Windows MSI workflow](.github/workflows/windows-msi.yml) builds and tests o
 
 Pull requests target `dev`, `release`, or `main`. Manual runs on the `release` branch use the RC suffix and do not publish. The exact build version is displayed in **Settings → General**, at the bottom of the sidebar. Local builds use the version from `Cargo.toml`. Windows Installer uses only the numeric version, so an RC and its corresponding stable release have the same MSI upgrade version.
 
+## Updating Volume3
+
+Right-click the tray icon and choose **Updates → Check for updates**. When a newer compatible GitHub release is found, the tray menu shows **Update \<version> available** with an **Install \<version>** command. Volume3 also checks at startup and every six hours while running. **Install updates automatically** and **Include prereleases** are both off by default and can be changed in the same menu.
+
+Downloads are verified against the SHA-256 digests published by GitHub Releases. The updater replaces both executables in a writable portable installation or installs the new MSI (Windows may ask for administrator approval), then restarts the tray with the same configuration. It does not modify profiles or settings during installation. Installations made with `scripts/install-local.ps1` should be updated by rerunning that script. To get the updater when running an older release that doesn't include it, download and install a newer release manually once.
+
 When opened normally, the MSI shows a branded setup wizard with the license, installation progress, and a completion message. Silent installs with `/qn` remain available. The MSI requests administrator approval through Windows UAC, installs into `C:\Program Files\Volume3`, and adds a Start menu shortcut for all users. Later MSI builds replace the existing machine-wide installation. The previous 0.1.1 MSI used a per-user installation context, so Windows Installer cannot upgrade it in place: uninstall 0.1.1 once before installing 0.1.2 or newer. Volume3 copies existing settings from `%LocalAppData%\Programs\Volume3\volume3.json` to its new per-user settings path on first launch. The package does not start Volume3 automatically after installation or enable sign-in startup until the user turns it on in Settings.
 
 ## Current limits

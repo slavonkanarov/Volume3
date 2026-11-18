@@ -22,14 +22,15 @@ use windows::{
             WindowsAndMessaging::{
                 CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
                 DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
-                GetMenuItemCount, GetMessageW, GetWindowLongPtrW, InsertMenuItemW, LoadCursorW,
-                MessageBoxW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-                SetForegroundWindow, SetMenuInfo, SetWindowLongPtrW, TrackPopupMenu,
-                TranslateMessage, GWLP_USERDATA, HICON, IDC_ARROW, LR_DEFAULTCOLOR, MB_ICONERROR,
-                MB_OK, MENUINFO, MENUITEMINFOW, MFS_DISABLED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE,
-                MIIM_ID, MIIM_STATE, MIIM_SUBMENU, MIM_BACKGROUND, MIM_STYLE, MNS_NOCHECK, MSG,
+                GetMenuItemCount, GetMessageW, GetWindowLongPtrW, InsertMenuItemW, KillTimer,
+                LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassExW,
+                RegisterWindowMessageW, SetForegroundWindow, SetMenuInfo, SetTimer,
+                SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, GWLP_USERDATA, HICON,
+                IDC_ARROW, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MENUINFO,
+                MENUITEMINFOW, MFS_DISABLED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE, MIIM_ID,
+                MIIM_STATE, MIIM_SUBMENU, MIM_BACKGROUND, MIM_STYLE, MNS_NOCHECK, MSG,
                 SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY,
-                WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM, WM_RBUTTONUP, WNDCLASSEXW,
+                WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
                 WS_OVERLAPPED,
             },
         },
@@ -41,6 +42,7 @@ use crate::{
     config::Config,
     panel::{self, Panel},
     settings::{self, SettingsWindow},
+    updates::{Event as UpdateEvent, Updater},
 };
 
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -54,6 +56,11 @@ const LEGACY_SOUND_SETTINGS: u32 = 9;
 const LEGACY_MODERN_MIXER: u32 = 10;
 const VOLUME_MIXER: u32 = 11;
 const SETTINGS: u32 = 12;
+const CHECK_UPDATES: u32 = 13;
+const INSTALL_UPDATE: u32 = 14;
+const AUTO_UPDATES: u32 = 15;
+const PRERELEASE_UPDATES: u32 = 16;
+const UPDATE_TIMER: usize = 1;
 
 #[derive(Clone, Copy)]
 enum MenuStyle {
@@ -76,6 +83,7 @@ struct TrayState {
     menu_open: Cell<bool>,
     panel: RefCell<Box<Panel>>,
     settings: RefCell<Box<SettingsWindow>>,
+    updater: RefCell<Updater>,
     config_path: PathBuf,
     icon: HICON,
     taskbar_created: u32,
@@ -92,6 +100,7 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
         menu_open: Cell::new(false),
         panel: RefCell::new(Box::new(Panel::new())),
         settings: RefCell::new(Box::new(SettingsWindow::new(config_path.clone()))),
+        updater: RefCell::new(Updater::new().map_err(|error| error.to_string())?),
         config_path,
         icon,
         taskbar_created,
@@ -158,6 +167,15 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
             let _ = DestroyWindow(hwnd);
         }
         return Err(e);
+    }
+    if state.updater.borrow().supported
+        && unsafe { SetTimer(Some(hwnd), UPDATE_TIMER, 500, None) } == 0
+    {
+        let error = std::io::Error::last_os_error().to_string();
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+        return Err(error);
     }
 
     let result = unsafe {
@@ -227,7 +245,15 @@ unsafe extern "system" fn window_proc(
         }
         return LRESULT(0);
     }
+    if message == WM_TIMER && wparam.0 == UPDATE_TIMER && !state.is_null() {
+        if !(*state).menu_open.replace(true) {
+            (*state).poll_updates(hwnd);
+            (*state).menu_open.set(false);
+        }
+        return LRESULT(0);
+    }
     if message == WM_DESTROY {
+        let _ = KillTimer(Some(hwnd), UPDATE_TIMER);
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
         if !state.is_null() {
             (*state).panel.borrow_mut().close();
@@ -242,6 +268,71 @@ unsafe extern "system" fn window_proc(
 }
 
 impl TrayState {
+    fn poll_updates(&self, hwnd: HWND) {
+        let preferences = self.config.borrow().updates.clone();
+        let event = self
+            .updater
+            .borrow_mut()
+            .tick(preferences.include_prereleases);
+        match event {
+            Some(UpdateEvent::Checked(result, manual)) => {
+                let mut updater = self.updater.borrow_mut();
+                let mut failed = false;
+                updater.status = match result {
+                    Ok(Some(update)) => {
+                        let status = format!("Update {} is available.", update.version);
+                        updater.available = Some(update);
+                        if !manual && preferences.automatic_install {
+                            updater.download();
+                            return;
+                        }
+                        status
+                    }
+                    Ok(None) => "No newer compatible release found.".into(),
+                    Err(error) => {
+                        failed = true;
+                        format!("Update check failed: {error}")
+                    }
+                };
+                let status = updater.status.clone();
+                drop(updater);
+                if manual {
+                    if failed {
+                        show_error(hwnd, &status);
+                    } else {
+                        let text = wide(&status);
+                        unsafe {
+                            MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(text.as_ptr()),
+                                w!("Volume3 Updates"),
+                                MB_OK | MB_ICONINFORMATION,
+                            );
+                        }
+                    }
+                }
+            }
+            Some(UpdateEvent::Downloaded(result)) => {
+                let result = result.and_then(|download| {
+                    self.updater
+                        .borrow()
+                        .install(download, &self.config_path)
+                        .map_err(|error| error.to_string())
+                });
+                if let Err(error) = result {
+                    self.updater.borrow_mut().status =
+                        "Update failed. Check again to retry.".into();
+                    show_error(hwnd, &format!("Update failed: {error}"));
+                } else if let Err(error) = unsafe { DestroyWindow(hwnd) } {
+                    self.updater.borrow_mut().status =
+                        "Update aborted: could not close Volume3.".into();
+                    show_error(hwnd, &error.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+
     fn toggle_panel(&self) -> Result<(), String> {
         let hwnd = {
             let mut panel = self.panel.borrow_mut();
@@ -256,10 +347,10 @@ impl TrayState {
     }
 
     fn open_menu(&self, hwnd: HWND) -> Result<(), String> {
-        self.panel.borrow_mut().close();
         if self.menu_open.replace(true) {
             return Ok(());
         }
+        self.panel.borrow_mut().close();
         let result = self.show_menu(hwnd);
         self.menu_open.set(false);
         result
@@ -367,6 +458,7 @@ impl TrayState {
                 "Settings…",
                 false,
             )?;
+            self.add_updates_menu(menu, &mut entries, &menu_info)?;
             menu_item(menu, &mut entries, MenuStyle::Action, EXIT, "Exit", false)?;
 
             let mut point = POINT::default();
@@ -393,6 +485,88 @@ impl TrayState {
         result
     }
 
+    fn add_updates_menu(
+        &self,
+        menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
+        entries: &mut Vec<Box<MenuEntry>>,
+        info: &MENUINFO,
+    ) -> Result<(), String> {
+        let updater = self.updater.borrow();
+        let submenu = unsafe { CreatePopupMenu().map_err(error)? };
+        let title = updater.available.as_ref().map_or_else(
+            || "Updates".to_string(),
+            |update| format!("Update {} available", update.version),
+        );
+        if let Err(error) = unsafe { SetMenuInfo(submenu, info).map_err(error) }
+            .and_then(|_| submenu_item(menu, entries, submenu, &title))
+        {
+            unsafe {
+                let _ = DestroyMenu(submenu);
+            }
+            return Err(error);
+        }
+        if !updater.supported {
+            return menu_item(
+                submenu,
+                entries,
+                MenuStyle::Disabled,
+                0,
+                "Update this installation manually",
+                false,
+            );
+        }
+        if !updater.status.is_empty() {
+            menu_item(
+                submenu,
+                entries,
+                MenuStyle::Disabled,
+                0,
+                &updater.status,
+                false,
+            )?;
+        }
+        let preferences = &self.config.borrow().updates;
+        let style = if updater.busy() {
+            MenuStyle::Disabled
+        } else {
+            MenuStyle::Action
+        };
+        menu_item(
+            submenu,
+            entries,
+            style,
+            CHECK_UPDATES,
+            "Check for updates",
+            false,
+        )?;
+        if let Some(update) = &updater.available {
+            menu_item(
+                submenu,
+                entries,
+                style,
+                INSTALL_UPDATE,
+                &format!("Install {}", update.version),
+                false,
+            )?;
+        }
+        for (id, label, enabled) in [
+            (
+                AUTO_UPDATES,
+                "Install updates automatically",
+                preferences.automatic_install,
+            ),
+            (
+                PRERELEASE_UPDATES,
+                "Include prereleases",
+                preferences.include_prereleases,
+            ),
+        ] {
+            let label = format!("{label}: {}", if enabled { "On" } else { "Off" });
+            menu_item(submenu, entries, style, id, &label, false)?;
+        }
+        Ok(())
+    }
+
     fn handle_choice(
         &self,
         hwnd: HWND,
@@ -410,6 +584,26 @@ impl TrayState {
             SETTINGS => {
                 let settings = self.settings.borrow_mut().open()?;
                 SettingsWindow::show(settings);
+            }
+            CHECK_UPDATES => self
+                .updater
+                .borrow_mut()
+                .check(true, self.config.borrow().updates.include_prereleases),
+            INSTALL_UPDATE => self.updater.borrow_mut().download(),
+            AUTO_UPDATES | PRERELEASE_UPDATES => {
+                let mut config = self.config.borrow().clone();
+                if choice == AUTO_UPDATES {
+                    config.updates.automatic_install = !config.updates.automatic_install;
+                } else {
+                    config.updates.include_prereleases = !config.updates.include_prereleases;
+                }
+                config.save(&self.config_path)?;
+                *self.config.borrow_mut() = config;
+                let preferences = &self.config.borrow().updates;
+                let mut updater = self.updater.borrow_mut();
+                if choice == PRERELEASE_UPDATES || preferences.automatic_install {
+                    updater.check(false, preferences.include_prereleases);
+                }
             }
             EXIT => unsafe {
                 DestroyWindow(hwnd).map_err(error)?;
