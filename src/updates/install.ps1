@@ -69,7 +69,9 @@ $null = $parent.Handle
 [IO.File]::WriteAllText((Join-Path $folder 'ready'), '')
 $deadline = [DateTime]::UtcNow.AddSeconds(15)
 while (-not (Test-Path -LiteralPath (Join-Path $folder 'go'))) {
-    if ($parent.HasExited -or [DateTime]::UtcNow -gt $deadline) { exit 1 }
+    # The parent may exit right after writing the go file, so re-check it before giving up.
+    if (($parent.HasExited -or [DateTime]::UtcNow -gt $deadline) -and
+        -not (Test-Path -LiteralPath (Join-Path $folder 'go'))) { exit 1 }
     Start-Sleep -Milliseconds 25
 }
 $failure = $null
