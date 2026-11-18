@@ -125,6 +125,14 @@ pub struct Config {
     pub profiles: BTreeMap<String, Profile>,
     pub input: InputSettings,
     pub display: DisplaySettings,
+    pub updates: UpdateSettings,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    pub automatic_install: bool,
+    pub include_prereleases: bool,
 }
 
 impl Default for Config {
@@ -136,6 +144,7 @@ impl Default for Config {
             profiles,
             input: InputSettings::default(),
             display: DisplaySettings::default(),
+            updates: UpdateSettings::default(),
         }
     }
 }
