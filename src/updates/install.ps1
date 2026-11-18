@@ -6,7 +6,13 @@ $plan = Get-Content -LiteralPath $PlanFile -Raw -Encoding UTF8 | ConvertFrom-Jso
 function Assert-Packages {
     foreach ($package in $plan.packages) {
         $source = Join-Path $folder $package.name
-        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $package.sha256) {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [IO.File]::OpenRead($source)
+            try { $hash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
+            finally { $stream.Dispose() }
+        } finally { $sha256.Dispose() }
+        if ($hash -ne $package.sha256) {
             throw "Update package SHA-256 mismatch: $($package.name)"
         }
     }
