@@ -18,6 +18,8 @@ pub mod settings;
 #[cfg(windows)]
 pub mod startup;
 #[cfg(windows)]
+pub mod theme;
+#[cfg(windows)]
 pub mod ui;
 #[cfg(windows)]
 mod updates;

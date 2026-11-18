@@ -3,16 +3,11 @@
 #[cfg(windows)]
 fn main() {
     if let Err(error) = run() {
-        let message: Vec<u16> = error.encode_utf16().chain(Some(0)).collect();
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                None,
-                windows::core::PCWSTR(message.as_ptr()),
-                windows::core::w!("Volume3"),
-                windows::Win32::UI::WindowsAndMessaging::MB_OK
-                    | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-            );
-        }
+        volume3::theme::show_message(
+            windows::Win32::Foundation::HWND::default(),
+            "Volume3",
+            &error,
+        );
         std::process::exit(1);
     }
 }

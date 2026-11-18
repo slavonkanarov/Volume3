@@ -1,43 +1,65 @@
-use std::{mem::size_of, path::PathBuf};
+use std::{cell::RefCell, mem::size_of, path::PathBuf, rc::Rc};
 
 use windows::{
     core::{w, PCWSTR},
     Win32::{
-        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE},
             Gdi::{
-                BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-                CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect,
-                GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, RoundRect,
-                SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-                DEFAULT_CHARSET, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-                FW_NORMAL, FW_SEMIBOLD, HDC, HFONT, HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-                NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+                BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+                DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW, InvalidateRect,
+                MonitorFromPoint, SelectObject, SetBkMode, SetTextColor, FW_NORMAL, FW_SEMIBOLD,
+                HBRUSH, HDC, HFONT, HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
+                SRCCOPY, TRANSPARENT,
             },
         },
         UI::{
-            Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN, VK_SPACE},
+            Controls::{SetWindowTheme, DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED},
+            Input::KeyboardAndMouse::{EnableWindow, VK_ESCAPE, VK_RETURN, VK_SPACE},
             WindowsAndMessaging::{
                 AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-                GetCursorPos, GetWindowLongPtrW, LoadCursorW, MessageBoxW, RegisterClassExW,
-                SetForegroundWindow, SetWindowLongPtrW, ShowWindow, GWLP_USERDATA, HICON,
-                IDC_ARROW, MB_ICONERROR, MB_OK, SW_RESTORE, WA_ACTIVE, WM_ACTIVATE, WM_CLOSE,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSEXW,
-                WS_CAPTION, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+                GetCursorPos, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+                LoadCursorW, PostMessageW, RegisterClassExW, SendMessageW, SetForegroundWindow,
+                SetWindowLongPtrW, SetWindowTextW, ShowWindow, BM_SETCHECK, BS_AUTOCHECKBOX,
+                BS_OWNERDRAW, CBN_SELCHANGE, CBS_DROPDOWNLIST, CBS_HASSTRINGS, CBS_OWNERDRAWFIXED,
+                CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, ES_AUTOVSCROLL,
+                ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, SW_HIDE,
+                SW_RESTORE, SW_SHOW, WA_ACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE,
+                WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
+                WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP,
+                WM_MEASUREITEM, WM_MOUSEMOVE, WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_BORDER,
+                WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_MINIMIZEBOX,
+                WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
             },
         },
     },
 };
 
-use crate::{startup, BUILD_VERSION};
+use crate::{
+    config::Config,
+    startup,
+    theme::{self, circle, draw_text, fill, font, rgb, rounded},
+    updates::Updater,
+    BUILD_VERSION,
+};
 
-const CLIENT_WIDTH: i32 = 760;
-const CLIENT_HEIGHT: i32 = 480;
+const CLIENT_WIDTH: i32 = 860;
+const CLIENT_HEIGHT: i32 = 620;
 const SIDEBAR_WIDTH: i32 = 210;
 const CONTENT_LEFT: i32 = 238;
 const CARD_TOP: i32 = 150;
 const CARD_BOTTOM: i32 = 248;
+pub(crate) const CHECK_UPDATES: u32 = 13;
+pub(crate) const INSTALL_UPDATE: u32 = 14;
+pub(crate) const AUTO_UPDATES: u32 = 15;
+pub(crate) const PRERELEASE_UPDATES: u32 = 16;
+pub(crate) const CHECK_AUTOMATICALLY: u32 = 17;
+pub(crate) const CANCEL_UPDATE: u32 = 18;
+pub(crate) const INSTALL_SELECTED: u32 = 19;
+const SELECT_VERSION: u32 = 20;
+const RELEASE_NOTES: u32 = 21;
+const UPDATE_STATUS: u32 = 22;
 
 pub struct SettingsWindow {
     hwnd: HWND,
@@ -47,10 +69,21 @@ pub struct SettingsWindow {
     title_font: HFONT,
     label_font: HFONT,
     body_font: HFONT,
+    background: HBRUSH,
+    owner: HWND,
+    updates_page: bool,
+    controls: Vec<HWND>,
+    versions: Vec<String>,
+    config: Rc<RefCell<Config>>,
+    updater: Rc<RefCell<Updater>>,
 }
 
 impl SettingsWindow {
-    pub fn new(config_path: PathBuf) -> Self {
+    pub(crate) fn new(
+        config_path: PathBuf,
+        config: Rc<RefCell<Config>>,
+        updater: Rc<RefCell<Updater>>,
+    ) -> Self {
         Self {
             hwnd: HWND::default(),
             config_path,
@@ -59,10 +92,18 @@ impl SettingsWindow {
             title_font: font(25, FW_SEMIBOLD.0 as i32),
             label_font: font(17, FW_SEMIBOLD.0 as i32),
             body_font: font(14, FW_NORMAL.0 as i32),
+            background: unsafe { CreateSolidBrush(rgb(20, 24, 32)) },
+            owner: HWND::default(),
+            updates_page: false,
+            controls: Vec::new(),
+            versions: Vec::new(),
+            config,
+            updater,
         }
     }
 
-    pub fn open(&mut self) -> Result<HWND, String> {
+    pub fn open(&mut self, owner: HWND) -> Result<HWND, String> {
+        self.owner = owner;
         self.autostart_enabled = startup::is_enabled(&self.config_path)?;
         if !self.hwnd.0.is_null() {
             unsafe {
@@ -72,7 +113,7 @@ impl SettingsWindow {
         }
         let module = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
             .map_err(|error| error.to_string())?;
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let ex_style = WS_EX_APPWINDOW;
         let mut bounds = RECT {
             left: 0,
@@ -125,7 +166,253 @@ impl SettingsWindow {
                 size_of::<i32>() as u32,
             );
         }
+        if let Err(error) = self.create_update_controls() {
+            self.close();
+            return Err(error);
+        }
+        self.refresh();
         Ok(hwnd)
+    }
+
+    pub fn is_open(&self) -> bool {
+        !self.hwnd.0.is_null()
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    fn create_update_controls(&mut self) -> Result<(), String> {
+        for (id, class, text, x, y, width, height, style) in [
+            (
+                CHECK_AUTOMATICALLY,
+                w!("BUTTON"),
+                "Check for updates automatically",
+                CONTENT_LEFT,
+                112,
+                580,
+                28,
+                BS_AUTOCHECKBOX as u32,
+            ),
+            (
+                AUTO_UPDATES,
+                w!("BUTTON"),
+                "Download, install, and restart automatically",
+                CONTENT_LEFT,
+                146,
+                580,
+                28,
+                BS_AUTOCHECKBOX as u32,
+            ),
+            (
+                PRERELEASE_UPDATES,
+                w!("BUTTON"),
+                "Include prereleases",
+                CONTENT_LEFT,
+                180,
+                580,
+                28,
+                BS_AUTOCHECKBOX as u32,
+            ),
+            (
+                CHECK_UPDATES,
+                w!("BUTTON"),
+                "Check for updates",
+                CONTENT_LEFT,
+                222,
+                180,
+                30,
+                BS_OWNERDRAW as u32,
+            ),
+            (
+                CANCEL_UPDATE,
+                w!("BUTTON"),
+                "Cancel",
+                CONTENT_LEFT + 194,
+                222,
+                100,
+                30,
+                BS_OWNERDRAW as u32,
+            ),
+            (
+                UPDATE_STATUS,
+                w!("STATIC"),
+                "",
+                CONTENT_LEFT,
+                263,
+                596,
+                43,
+                0,
+            ),
+            (
+                SELECT_VERSION,
+                w!("COMBOBOX"),
+                "",
+                CONTENT_LEFT,
+                338,
+                352,
+                240,
+                (CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS) as u32 | WS_VSCROLL.0,
+            ),
+            (
+                INSTALL_SELECTED,
+                w!("BUTTON"),
+                "Install selected version",
+                CONTENT_LEFT + 366,
+                336,
+                230,
+                30,
+                BS_OWNERDRAW as u32,
+            ),
+            (
+                RELEASE_NOTES,
+                w!("EDIT"),
+                "",
+                CONTENT_LEFT,
+                381,
+                596,
+                110,
+                ES_MULTILINE as u32
+                    | ES_READONLY as u32
+                    | ES_AUTOVSCROLL as u32
+                    | WS_VSCROLL.0
+                    | WS_BORDER.0,
+            ),
+        ] {
+            let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            let control = unsafe {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    class,
+                    PCWSTR(text.as_ptr()),
+                    WS_CHILD | WS_TABSTOP | WINDOW_STYLE(style),
+                    x,
+                    y,
+                    width,
+                    height,
+                    Some(self.hwnd),
+                    Some(HMENU(id as *mut _)),
+                    None,
+                    None,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            self.controls.push(control);
+            unsafe {
+                SendMessageW(
+                    control,
+                    WM_SETFONT,
+                    Some(WPARAM(self.body_font.0 as usize)),
+                    Some(LPARAM(1)),
+                );
+                match id {
+                    CHECK_AUTOMATICALLY | AUTO_UPDATES | PRERELEASE_UPDATES => {
+                        theme::style_control(control, 1)
+                    }
+                    SELECT_VERSION => theme::style_control(control, 2),
+                    CHECK_UPDATES | CANCEL_UPDATE | INSTALL_SELECTED => {
+                        theme::style_control(control, 0)
+                    }
+                    _ => {}
+                }
+                let _ = SetWindowTheme(control, w!("DarkMode_Explorer"), None);
+                let _ = ShowWindow(control, if self.updates_page { SW_SHOW } else { SW_HIDE });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn refresh(&mut self) {
+        if !self.is_open() {
+            return;
+        }
+        let updater = self.updater.borrow();
+        let config = self.config.borrow();
+        unsafe {
+            for (id, enabled) in [
+                (CHECK_AUTOMATICALLY, config.updates.check_automatically),
+                (AUTO_UPDATES, config.updates.automatic_install),
+                (PRERELEASE_UPDATES, config.updates.include_prereleases),
+            ] {
+                if let Ok(control) = GetDlgItem(Some(self.hwnd), id as i32) {
+                    SendMessageW(
+                        control,
+                        BM_SETCHECK,
+                        Some(WPARAM(usize::from(enabled))),
+                        None,
+                    );
+                    let _ = EnableWindow(
+                        control,
+                        updater.supported
+                            && (id != AUTO_UPDATES || config.updates.check_automatically),
+                    );
+                }
+            }
+            for (id, enabled) in [
+                (CHECK_UPDATES, updater.supported && !updater.busy()),
+                (
+                    CANCEL_UPDATE,
+                    updater.busy() || updater.downloaded.is_some(),
+                ),
+                (
+                    INSTALL_SELECTED,
+                    !updater.busy()
+                        && updater
+                            .releases
+                            .get(updater.selected)
+                            .is_some_and(|release| {
+                                config.updates.include_prereleases || release.version.pre.is_empty()
+                            }),
+                ),
+                (SELECT_VERSION, !updater.busy()),
+            ] {
+                if let Ok(control) = GetDlgItem(Some(self.hwnd), id as i32) {
+                    let _ = EnableWindow(control, enabled);
+                }
+            }
+            let versions: Vec<_> = updater
+                .releases
+                .iter()
+                .map(|release| {
+                    if config.updates.include_prereleases || release.version.pre.is_empty() {
+                        release.version.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect();
+            if self.versions != versions {
+                if let Ok(control) = GetDlgItem(Some(self.hwnd), SELECT_VERSION as i32) {
+                    SendMessageW(control, CB_RESETCONTENT, None, None);
+                    for version in versions.iter().filter(|version| !version.is_empty()) {
+                        let text: Vec<u16> = version.encode_utf16().chain(Some(0)).collect();
+                        SendMessageW(
+                            control,
+                            CB_ADDSTRING,
+                            None,
+                            Some(LPARAM(text.as_ptr() as isize)),
+                        );
+                    }
+                }
+                self.versions = versions;
+            }
+            if let Ok(control) = GetDlgItem(Some(self.hwnd), SELECT_VERSION as i32) {
+                let index = self
+                    .versions
+                    .iter()
+                    .take(updater.selected)
+                    .filter(|version| !version.is_empty())
+                    .count();
+                SendMessageW(control, CB_SETCURSEL, Some(WPARAM(index)), None);
+            }
+            set_text(self.hwnd, UPDATE_STATUS, &updater.progress());
+            let notes = updater.releases.get(updater.selected).map_or(
+                "Check for updates to load available versions and release notes.",
+                |release| release.notes.as_str(),
+            );
+            set_text(self.hwnd, RELEASE_NOTES, notes);
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
     pub fn show(hwnd: HWND) {
@@ -139,6 +426,8 @@ impl SettingsWindow {
         if !self.hwnd.0.is_null() {
             let hwnd = self.hwnd;
             self.hwnd = HWND::default();
+            self.controls.clear();
+            self.versions.clear();
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 let _ = DestroyWindow(hwnd);
@@ -228,42 +517,51 @@ impl SettingsWindow {
             self.body_font,
             rgb(153, 167, 187),
         );
-        rounded(
-            hdc,
-            RECT {
-                left: 12,
-                top: 110,
-                right: SIDEBAR_WIDTH - 12,
-                bottom: 152,
-            },
-            rgb(38, 68, 88),
-            9,
-        );
-        fill(
-            hdc,
-            RECT {
-                left: 12,
-                top: 116,
-                right: 16,
-                bottom: 146,
-            },
-            rgb(48, 126, 164),
-        );
+        for (index, label) in ["General", "Updates"].iter().enumerate() {
+            let top = 110 + index as i32 * 50;
+            if self.updates_page == (index == 1) {
+                rounded(
+                    hdc,
+                    RECT {
+                        left: 12,
+                        top,
+                        right: SIDEBAR_WIDTH - 12,
+                        bottom: top + 42,
+                    },
+                    rgb(38, 68, 88),
+                    9,
+                );
+                fill(
+                    hdc,
+                    RECT {
+                        left: 12,
+                        top: top + 6,
+                        right: 16,
+                        bottom: top + 36,
+                    },
+                    rgb(48, 126, 164),
+                );
+            }
+            draw_text(
+                hdc,
+                label,
+                RECT {
+                    left: 29,
+                    top: top + 4,
+                    right: SIDEBAR_WIDTH - 24,
+                    bottom: top + 38,
+                },
+                self.label_font,
+                rgb(242, 246, 250),
+            );
+        }
         draw_text(
             hdc,
-            "General",
-            RECT {
-                left: 29,
-                top: 114,
-                right: SIDEBAR_WIDTH - 24,
-                bottom: 148,
+            if self.updates_page {
+                "Updates"
+            } else {
+                "General"
             },
-            self.label_font,
-            rgb(242, 246, 250),
-        );
-        draw_text(
-            hdc,
-            "General",
             RECT {
                 left: CONTENT_LEFT,
                 top: 29,
@@ -273,120 +571,152 @@ impl SettingsWindow {
             self.title_font,
             rgb(242, 246, 250),
         );
-        draw_text(
-            hdc,
-            "App behavior and startup.",
-            RECT {
-                left: CONTENT_LEFT,
-                top: 68,
-                right: client.right - 26,
-                bottom: 96,
-            },
-            self.body_font,
-            rgb(153, 167, 187),
-        );
-        draw_text(
-            hdc,
-            "STARTUP",
-            RECT {
-                left: CONTENT_LEFT,
-                top: 117,
-                right: client.right - 26,
-                bottom: 145,
-            },
-            self.body_font,
-            rgb(153, 167, 187),
-        );
-        rounded(
-            hdc,
-            RECT {
-                left: CONTENT_LEFT,
-                top: CARD_TOP,
-                right: client.right - 26,
-                bottom: CARD_BOTTOM,
-            },
-            if self.hovered {
-                rgb(41, 50, 64)
-            } else {
-                rgb(29, 35, 46)
-            },
-            10,
-        );
-        draw_text(
-            hdc,
-            "Start with Windows",
-            RECT {
-                left: CONTENT_LEFT + 20,
-                top: 166,
-                right: client.right - 120,
-                bottom: 196,
-            },
-            self.label_font,
-            rgb(242, 246, 250),
-        );
-        draw_text(
-            hdc,
-            "Launch Volume3 when you sign in to Windows.",
-            RECT {
-                left: CONTENT_LEFT + 20,
-                top: 196,
-                right: client.right - 120,
-                bottom: 226,
-            },
-            self.body_font,
-            rgb(153, 167, 187),
-        );
-        let track_left = client.right - 104;
-        rounded(
-            hdc,
-            RECT {
-                left: track_left,
-                top: 171,
-                right: track_left + 58,
-                bottom: 201,
-            },
-            if self.autostart_enabled {
-                rgb(48, 126, 164)
-            } else {
-                rgb(91, 105, 123)
-            },
-            30,
-        );
-        circle(
-            hdc,
-            if self.autostart_enabled {
-                track_left + 32
-            } else {
-                track_left + 4
-            },
-            175,
-            22,
-            rgb(255, 255, 255),
-        );
-        draw_text(
-            hdc,
-            if self.autostart_enabled { "On" } else { "Off" },
-            RECT {
-                left: track_left + 18,
-                top: 203,
-                right: track_left + 58,
-                bottom: 229,
-            },
-            self.body_font,
-            rgb(153, 167, 187),
-        );
-        draw_text(
-            hdc,
-            "Volume3 starts in the notification area.",
-            RECT {
-                left: CONTENT_LEFT,
-                top: 271,
-                right: client.right - 26,
-                bottom: 301,
-            },
-            self.body_font,
-            rgb(153, 167, 187),
-        );
+        if self.updates_page {
+            for (text, top) in [
+                (format!("Current version: {BUILD_VERSION}"), 68),
+                ("Available versions and release notes".into(), 308),
+                (
+                    "Automatic installation waits until this window is closed.".into(),
+                    500,
+                ),
+                (
+                    "Protected folders and MSI updates require administrator approval.".into(),
+                    522,
+                ),
+                (
+                    "Older versions disable auto-install; data formats may differ.".into(),
+                    544,
+                ),
+            ] {
+                draw_text(
+                    hdc,
+                    &text,
+                    RECT {
+                        left: CONTENT_LEFT,
+                        top,
+                        right: client.right - 26,
+                        bottom: top + 25,
+                    },
+                    self.body_font,
+                    rgb(153, 167, 187),
+                );
+            }
+        } else {
+            draw_text(
+                hdc,
+                "App behavior and startup.",
+                RECT {
+                    left: CONTENT_LEFT,
+                    top: 68,
+                    right: client.right - 26,
+                    bottom: 96,
+                },
+                self.body_font,
+                rgb(153, 167, 187),
+            );
+            draw_text(
+                hdc,
+                "STARTUP",
+                RECT {
+                    left: CONTENT_LEFT,
+                    top: 117,
+                    right: client.right - 26,
+                    bottom: 145,
+                },
+                self.body_font,
+                rgb(153, 167, 187),
+            );
+            rounded(
+                hdc,
+                RECT {
+                    left: CONTENT_LEFT,
+                    top: CARD_TOP,
+                    right: client.right - 26,
+                    bottom: CARD_BOTTOM,
+                },
+                if self.hovered {
+                    rgb(41, 50, 64)
+                } else {
+                    rgb(29, 35, 46)
+                },
+                10,
+            );
+            draw_text(
+                hdc,
+                "Start with Windows",
+                RECT {
+                    left: CONTENT_LEFT + 20,
+                    top: 166,
+                    right: client.right - 120,
+                    bottom: 196,
+                },
+                self.label_font,
+                rgb(242, 246, 250),
+            );
+            draw_text(
+                hdc,
+                "Launch Volume3 when you sign in to Windows.",
+                RECT {
+                    left: CONTENT_LEFT + 20,
+                    top: 196,
+                    right: client.right - 120,
+                    bottom: 226,
+                },
+                self.body_font,
+                rgb(153, 167, 187),
+            );
+            let track_left = client.right - 104;
+            rounded(
+                hdc,
+                RECT {
+                    left: track_left,
+                    top: 171,
+                    right: track_left + 58,
+                    bottom: 201,
+                },
+                if self.autostart_enabled {
+                    rgb(48, 126, 164)
+                } else {
+                    rgb(91, 105, 123)
+                },
+                30,
+            );
+            circle(
+                hdc,
+                if self.autostart_enabled {
+                    track_left + 32
+                } else {
+                    track_left + 4
+                },
+                175,
+                22,
+                rgb(255, 255, 255),
+            );
+            draw_text(
+                hdc,
+                if self.autostart_enabled { "On" } else { "Off" },
+                RECT {
+                    left: track_left + 18,
+                    top: 203,
+                    right: track_left + 58,
+                    bottom: 229,
+                },
+                self.body_font,
+                rgb(153, 167, 187),
+            );
+            draw_text(
+                hdc,
+                "Volume3 starts in the notification area.",
+                RECT {
+                    left: CONTENT_LEFT,
+                    top: 271,
+                    right: client.right - 26,
+                    bottom: 301,
+                },
+                self.body_font,
+                rgb(153, 167, 187),
+            );
+        }
         draw_text(
             hdc,
             &format!("Version {BUILD_VERSION}"),
@@ -423,6 +753,7 @@ impl Drop for SettingsWindow {
                     let _ = DeleteObject(HGDIOBJ(font.0));
                 }
             }
+            let _ = DeleteObject(HGDIOBJ(self.background.0));
         }
     }
 }
@@ -463,6 +794,112 @@ unsafe extern "system" fn window_proc(
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     match message {
+        WM_MEASUREITEM if wparam.0 == SELECT_VERSION as usize => {
+            (*(lparam.0 as *mut MEASUREITEMSTRUCT)).itemHeight = 28;
+            return LRESULT(1);
+        }
+        WM_DRAWITEM => {
+            let item = &*(lparam.0 as *const DRAWITEMSTRUCT);
+            if item.CtlID == SELECT_VERSION {
+                fill(
+                    item.hDC,
+                    item.rcItem,
+                    if item.itemState.0 & ODS_SELECTED.0 != 0 {
+                        rgb(38, 68, 88)
+                    } else {
+                        rgb(29, 35, 46)
+                    },
+                );
+                let _ = SetBkMode(item.hDC, TRANSPARENT);
+                if let Some(version) = (&*pointer)
+                    .versions
+                    .iter()
+                    .filter(|version| !version.is_empty())
+                    .nth(item.itemID as usize)
+                {
+                    draw_text(
+                        item.hDC,
+                        version,
+                        RECT {
+                            left: item.rcItem.left + 12,
+                            ..item.rcItem
+                        },
+                        (&*pointer).body_font,
+                        rgb(242, 246, 250),
+                    );
+                }
+            } else {
+                theme::draw_button(
+                    item,
+                    matches!(item.CtlID, CHECK_UPDATES | INSTALL_SELECTED),
+                    theme::BACKGROUND,
+                );
+            }
+            return LRESULT(1);
+        }
+        WM_COMMAND => {
+            let id = wparam.0 as u16 as u32;
+            if id == 2 {
+                (&mut *pointer).close();
+                return LRESULT(0);
+            }
+            if id == 1 && !(&*pointer).updates_page {
+                if let Err(error) = (&mut *pointer).toggle() {
+                    theme::show_message(hwnd, "Settings error", &error);
+                }
+                return LRESULT(0);
+            }
+            if !matches!(
+                id,
+                SELECT_VERSION
+                    | CHECK_UPDATES
+                    | AUTO_UPDATES
+                    | PRERELEASE_UPDATES
+                    | CHECK_AUTOMATICALLY
+                    | CANCEL_UPDATE
+                    | INSTALL_SELECTED
+            ) {
+                return LRESULT(0);
+            }
+            let window = &mut *pointer;
+            if id == SELECT_VERSION && (wparam.0 >> 16) as u32 == CBN_SELCHANGE {
+                let index = SendMessageW(HWND(lparam.0 as *mut _), CB_GETCURSEL, None, None).0;
+                if index >= 0 {
+                    if let Some((selected, _)) = window
+                        .versions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, version)| !version.is_empty())
+                        .nth(index as usize)
+                    {
+                        window.updater.borrow_mut().selected = selected;
+                    }
+                }
+                window.refresh();
+            } else if matches!(
+                id,
+                CHECK_UPDATES
+                    | AUTO_UPDATES
+                    | PRERELEASE_UPDATES
+                    | CHECK_AUTOMATICALLY
+                    | CANCEL_UPDATE
+                    | INSTALL_SELECTED
+            ) {
+                let _ = PostMessageW(
+                    Some(window.owner),
+                    WM_COMMAND,
+                    WPARAM(id as usize),
+                    LPARAM(0),
+                );
+            }
+            return LRESULT(0);
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            let hdc = HDC(wparam.0 as *mut _);
+            let _ = SetTextColor(hdc, rgb(242, 246, 250));
+            let _ = windows::Win32::Graphics::Gdi::SetBkColor(hdc, rgb(20, 24, 32));
+            return LRESULT((&*pointer).background.0 as isize);
+        }
         WM_PAINT => {
             (&*pointer).paint(hwnd);
             return LRESULT(0);
@@ -475,10 +912,29 @@ unsafe extern "system" fn window_proc(
             let x = lparam.0 as u16 as i16 as i32;
             let y = (lparam.0 >> 16) as u16 as i16 as i32;
             let mut client = RECT::default();
-            if GetClientRect(hwnd, &mut client).is_ok() && in_card(x, y, client.right) {
+            let window = &mut *pointer;
+            if (12..SIDEBAR_WIDTH - 12).contains(&x) && (110..202).contains(&y) {
+                window.updates_page = y >= 160;
+                for control in &window.controls {
+                    let _ = ShowWindow(
+                        *control,
+                        if window.updates_page {
+                            SW_SHOW
+                        } else {
+                            SW_HIDE
+                        },
+                    );
+                }
+                window.refresh();
+                return LRESULT(0);
+            }
+            if !window.updates_page
+                && GetClientRect(hwnd, &mut client).is_ok()
+                && in_card(x, y, client.right)
+            {
                 let result = (&mut *pointer).toggle();
                 if let Err(error) = result {
-                    show_error(hwnd, &error);
+                    theme::show_message(hwnd, "Settings error", &error);
                 }
             }
             return LRESULT(0);
@@ -498,10 +954,12 @@ unsafe extern "system" fn window_proc(
             return LRESULT(0);
         }
         WM_KEYDOWN => {
-            if wparam.0 as u16 == VK_SPACE.0 || wparam.0 as u16 == VK_RETURN.0 {
+            if !(&*pointer).updates_page
+                && (wparam.0 as u16 == VK_SPACE.0 || wparam.0 as u16 == VK_RETURN.0)
+            {
                 let result = (&mut *pointer).toggle();
                 if let Err(error) = result {
-                    show_error(hwnd, &error);
+                    theme::show_message(hwnd, "Settings error", &error);
                 }
                 return LRESULT(0);
             }
@@ -521,91 +979,17 @@ unsafe extern "system" fn window_proc(
     DefWindowProcW(hwnd, message, wparam, lparam)
 }
 
+unsafe fn set_text(hwnd: HWND, id: u32, text: &str) {
+    if let Ok(control) = GetDlgItem(Some(hwnd), id as i32) {
+        let mut previous = vec![0; GetWindowTextLengthW(control) as usize + 1];
+        let len = GetWindowTextW(control, &mut previous);
+        if String::from_utf16_lossy(&previous[..len as usize]) != text {
+            let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            let _ = SetWindowTextW(control, PCWSTR(text.as_ptr()));
+        }
+    }
+}
+
 fn in_card(x: i32, y: i32, width: i32) -> bool {
     (CONTENT_LEFT..width - 26).contains(&x) && (CARD_TOP..CARD_BOTTOM).contains(&y)
-}
-
-fn font(size: i32, weight: i32) -> HFONT {
-    unsafe {
-        CreateFontW(
-            -size,
-            0,
-            0,
-            0,
-            weight,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            0,
-            w!("Segoe UI Variable"),
-        )
-    }
-}
-
-unsafe fn fill(hdc: HDC, rect: RECT, color: COLORREF) {
-    let brush = CreateSolidBrush(color);
-    FillRect(hdc, &rect, brush);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-}
-
-unsafe fn rounded(hdc: HDC, rect: RECT, color: COLORREF, radius: i32) {
-    let brush = CreateSolidBrush(color);
-    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-    let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-    let _ = RoundRect(
-        hdc,
-        rect.left,
-        rect.top,
-        rect.right,
-        rect.bottom,
-        radius,
-        radius,
-    );
-    let _ = SelectObject(hdc, old_pen);
-    let _ = SelectObject(hdc, old_brush);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-}
-
-unsafe fn circle(hdc: HDC, x: i32, y: i32, size: i32, color: COLORREF) {
-    let brush = CreateSolidBrush(color);
-    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-    let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-    let _ = Ellipse(hdc, x, y, x + size, y + size);
-    let _ = SelectObject(hdc, old_pen);
-    let _ = SelectObject(hdc, old_brush);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-}
-
-unsafe fn draw_text(hdc: HDC, text: &str, rect: RECT, font: HFONT, color: COLORREF) {
-    let old_font = SelectObject(hdc, HGDIOBJ(font.0));
-    let _ = SetTextColor(hdc, color);
-    let mut bounds = rect;
-    let mut value: Vec<u16> = text.encode_utf16().collect();
-    DrawTextW(
-        hdc,
-        &mut value,
-        &mut bounds,
-        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
-    let _ = SelectObject(hdc, old_font);
-}
-
-fn show_error(hwnd: HWND, error: &str) {
-    let text: Vec<u16> = error.encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        MessageBoxW(
-            Some(hwnd),
-            PCWSTR(text.as_ptr()),
-            w!("Volume3 Settings"),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
-fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
-    COLORREF(u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16))
 }

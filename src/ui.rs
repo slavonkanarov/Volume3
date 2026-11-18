@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     mem::size_of,
     path::PathBuf,
+    rc::Rc,
 };
 
 use windows::{
@@ -22,16 +23,15 @@ use windows::{
             WindowsAndMessaging::{
                 CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
                 DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
-                GetMenuItemCount, GetMessageW, GetWindowLongPtrW, InsertMenuItemW, KillTimer,
-                LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassExW,
+                GetMenuItemCount, GetMessageW, GetWindowLongPtrW, InsertMenuItemW,
+                IsDialogMessageW, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassExW,
                 RegisterWindowMessageW, SetForegroundWindow, SetMenuInfo, SetTimer,
                 SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, GWLP_USERDATA, HICON,
-                IDC_ARROW, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MENUINFO,
-                MENUITEMINFOW, MFS_DISABLED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE, MIIM_ID,
-                MIIM_STATE, MIIM_SUBMENU, MIM_BACKGROUND, MIM_STYLE, MNS_NOCHECK, MSG,
-                SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_DESTROY,
-                WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
-                WS_OVERLAPPED,
+                IDC_ARROW, LR_DEFAULTCOLOR, MENUINFO, MENUITEMINFOW, MFS_DISABLED, MFT_OWNERDRAW,
+                MIIM_DATA, MIIM_FTYPE, MIIM_ID, MIIM_STATE, MIIM_SUBMENU, MIM_BACKGROUND,
+                MIM_STYLE, MNS_NOCHECK, MSG, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+                WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_DRAWITEM, WM_LBUTTONUP,
+                WM_MEASUREITEM, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPED,
             },
         },
     },
@@ -41,7 +41,11 @@ use crate::{
     audio::{self, Audio},
     config::Config,
     panel::{self, Panel},
-    settings::{self, SettingsWindow},
+    settings::{
+        self, SettingsWindow, AUTO_UPDATES, CANCEL_UPDATE, CHECK_AUTOMATICALLY, CHECK_UPDATES,
+        INSTALL_SELECTED, INSTALL_UPDATE, PRERELEASE_UPDATES,
+    },
+    theme,
     updates::{Event as UpdateEvent, Updater},
 };
 
@@ -56,10 +60,6 @@ const LEGACY_SOUND_SETTINGS: u32 = 9;
 const LEGACY_MODERN_MIXER: u32 = 10;
 const VOLUME_MIXER: u32 = 11;
 const SETTINGS: u32 = 12;
-const CHECK_UPDATES: u32 = 13;
-const INSTALL_UPDATE: u32 = 14;
-const AUTO_UPDATES: u32 = 15;
-const PRERELEASE_UPDATES: u32 = 16;
 const UPDATE_TIMER: usize = 1;
 
 #[derive(Clone, Copy)]
@@ -79,28 +79,37 @@ struct MenuEntry {
 
 struct TrayState {
     audio: Audio,
-    config: RefCell<Config>,
+    config: Rc<RefCell<Config>>,
     menu_open: Cell<bool>,
     panel: RefCell<Box<Panel>>,
     settings: RefCell<Box<SettingsWindow>>,
-    updater: RefCell<Updater>,
+    updater: Rc<RefCell<Updater>>,
     config_path: PathBuf,
     icon: HICON,
     taskbar_created: u32,
 }
 
 pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
-    let config = Config::load(&config_path)?;
+    let update_error = std::env::var("VOLUME3_UPDATE_ERROR").ok();
+    std::env::remove_var("VOLUME3_UPDATE_ERROR");
+    let config = Rc::new(RefCell::new(Config::load(&config_path)?));
+    let updater = Rc::new(RefCell::new(
+        Updater::new().map_err(|error| error.to_string())?,
+    ));
     let audio = Audio::new()?;
     let icon = load_icon()?;
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     let mut state = Box::new(TrayState {
         audio,
-        config: RefCell::new(config),
+        config: config.clone(),
         menu_open: Cell::new(false),
         panel: RefCell::new(Box::new(Panel::new())),
-        settings: RefCell::new(Box::new(SettingsWindow::new(config_path.clone()))),
-        updater: RefCell::new(Updater::new().map_err(|error| error.to_string())?),
+        settings: RefCell::new(Box::new(SettingsWindow::new(
+            config_path.clone(),
+            config,
+            updater.clone(),
+        ))),
+        updater,
         config_path,
         icon,
         taskbar_created,
@@ -158,7 +167,7 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
             .any(|d| &d.id == saved)
         {
             if let Err(e) = state.audio.set_default_device(saved, audio::output_flow()) {
-                show_error(hwnd, &e);
+                theme::show_message(hwnd, "Volume3", &e);
             }
         }
     }
@@ -178,6 +187,9 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
         return Err(error);
     }
 
+    if let Some(error) = update_error {
+        theme::show_message(hwnd, "Update failed", &error);
+    }
     let result = unsafe {
         let mut message = MSG::default();
         loop {
@@ -187,6 +199,10 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
             }
             if status == 0 {
                 break Ok(());
+            }
+            let settings_hwnd = state.settings.borrow().hwnd();
+            if !settings_hwnd.0.is_null() && IsDialogMessageW(settings_hwnd, &message).as_bool() {
+                continue;
             }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -233,7 +249,7 @@ unsafe extern "system" fn window_proc(
                 (*state).open_menu(hwnd)
             };
             if let Err(e) = result {
-                show_error(hwnd, &e);
+                theme::show_message(hwnd, "Volume3", &e);
             }
         }
         return LRESULT(0);
@@ -241,15 +257,23 @@ unsafe extern "system" fn window_proc(
     let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayState;
     if !state.is_null() && message == (*state).taskbar_created {
         if let Err(e) = add_icon(hwnd, (*state).icon) {
-            show_error(hwnd, &e);
+            theme::show_message(hwnd, "Volume3", &e);
         }
         return LRESULT(0);
     }
     if message == WM_TIMER && wparam.0 == UPDATE_TIMER && !state.is_null() {
         if !(*state).menu_open.replace(true) {
             (*state).poll_updates(hwnd);
+            (*state).settings.borrow_mut().refresh();
             (*state).menu_open.set(false);
         }
+        return LRESULT(0);
+    }
+    if message == WM_COMMAND && !state.is_null() {
+        if let Err(error) = (*state).handle_choice(hwnd, wparam.0 as u16 as u32, &[]) {
+            theme::show_message(hwnd, "Volume3", &error);
+        }
+        (*state).settings.borrow_mut().refresh();
         return LRESULT(0);
     }
     if message == WM_DESTROY {
@@ -270,25 +294,30 @@ unsafe extern "system" fn window_proc(
 impl TrayState {
     fn poll_updates(&self, hwnd: HWND) {
         let preferences = self.config.borrow().updates.clone();
-        let event = self
-            .updater
-            .borrow_mut()
-            .tick(preferences.include_prereleases);
+        let event = self.updater.borrow_mut().tick(&preferences);
         match event {
             Some(UpdateEvent::Checked(result, manual)) => {
                 let mut updater = self.updater.borrow_mut();
                 let mut failed = false;
                 updater.status = match result {
-                    Ok(Some(update)) => {
-                        let status = format!("Update {} is available.", update.version);
-                        updater.available = Some(update);
-                        if !manual && preferences.automatic_install {
-                            updater.download();
-                            return;
+                    Ok(releases) => {
+                        updater.releases = releases;
+                        updater.select_available(preferences.include_prereleases);
+                        match updater.available.clone() {
+                            Some(update) => {
+                                if !manual
+                                    && preferences.check_automatically
+                                    && preferences.automatic_install
+                                {
+                                    updater.install_requested = false;
+                                    updater.download(update);
+                                    return;
+                                }
+                                format!("Update {} is available.", update.version)
+                            }
+                            None => "No newer compatible release found.".into(),
                         }
-                        status
                     }
-                    Ok(None) => "No newer compatible release found.".into(),
                     Err(error) => {
                         failed = true;
                         format!("Update check failed: {error}")
@@ -296,40 +325,56 @@ impl TrayState {
                 };
                 let status = updater.status.clone();
                 drop(updater);
-                if manual {
+                if manual && !self.settings.borrow().is_open() {
                     if failed {
-                        show_error(hwnd, &status);
+                        theme::show_message(hwnd, "Volume3", &status);
                     } else {
-                        let text = wide(&status);
-                        unsafe {
-                            MessageBoxW(
-                                Some(hwnd),
-                                PCWSTR(text.as_ptr()),
-                                w!("Volume3 Updates"),
-                                MB_OK | MB_ICONINFORMATION,
-                            );
-                        }
+                        theme::show_message(hwnd, "Updates", &status);
                     }
                 }
             }
-            Some(UpdateEvent::Downloaded(result)) => {
-                let result = result.and_then(|download| {
-                    self.updater
-                        .borrow()
-                        .install(download, &self.config_path)
-                        .map_err(|error| error.to_string())
-                });
-                if let Err(error) = result {
-                    self.updater.borrow_mut().status =
-                        "Update failed. Check again to retry.".into();
-                    show_error(hwnd, &format!("Update failed: {error}"));
-                } else if let Err(error) = unsafe { DestroyWindow(hwnd) } {
-                    self.updater.borrow_mut().status =
-                        "Update aborted: could not close Volume3.".into();
-                    show_error(hwnd, &error.to_string());
+            Some(UpdateEvent::Downloaded(result)) => match result {
+                Ok(download) => {
+                    let mut updater = self.updater.borrow_mut();
+                    updater.downloaded = Some(download);
+                    updater.status =
+                        "Download verified; close Settings to install and restart.".into();
                 }
-            }
+                Err(error) => {
+                    self.updater.borrow_mut().status = format!("Download failed: {error}");
+                    if !self.settings.borrow().is_open() {
+                        theme::show_message(hwnd, "Volume3", &error);
+                    }
+                }
+            },
             None => {}
+        }
+        let install = {
+            let updater = self.updater.borrow();
+            updater.downloaded.is_some()
+                && !self.settings.borrow().is_open()
+                && (updater.install_requested
+                    || (preferences.check_automatically
+                        && preferences.automatic_install
+                        && updater.downloaded.as_ref().is_some_and(|download| {
+                            preferences.include_prereleases || download.version.pre.is_empty()
+                        })))
+        };
+        if install {
+            let download = self.updater.borrow_mut().downloaded.take().unwrap();
+            let result = self
+                .updater
+                .borrow()
+                .install(download, &self.config_path)
+                .map_err(|error| error.to_string());
+            if let Err(error) = result {
+                self.updater.borrow_mut().status = format!("Update failed: {error}");
+                theme::show_message(hwnd, "Volume3", &error);
+            } else if let Err(error) = unsafe { DestroyWindow(hwnd) } {
+                self.updater.borrow_mut().status =
+                    "Update aborted: could not close Volume3.".into();
+                theme::show_message(hwnd, "Volume3", &error.to_string());
+            }
         }
     }
 
@@ -551,6 +596,11 @@ impl TrayState {
         }
         for (id, label, enabled) in [
             (
+                CHECK_AUTOMATICALLY,
+                "Check automatically",
+                preferences.check_automatically,
+            ),
+            (
                 AUTO_UPDATES,
                 "Install updates automatically",
                 preferences.automatic_install,
@@ -582,27 +632,73 @@ impl TrayState {
             LEGACY_MODERN_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
             VOLUME_MIXER => launch(hwnd, "ms-settings:apps-volume", "")?,
             SETTINGS => {
-                let settings = self.settings.borrow_mut().open()?;
+                let settings = self.settings.borrow_mut().open(hwnd)?;
                 SettingsWindow::show(settings);
             }
-            CHECK_UPDATES => self
-                .updater
-                .borrow_mut()
-                .check(true, self.config.borrow().updates.include_prereleases),
-            INSTALL_UPDATE => self.updater.borrow_mut().download(),
-            AUTO_UPDATES | PRERELEASE_UPDATES => {
+            CHECK_UPDATES => self.updater.borrow_mut().check(true),
+            CANCEL_UPDATE => self.updater.borrow_mut().cancel(),
+            INSTALL_UPDATE | INSTALL_SELECTED => {
+                let update = {
+                    let updater = self.updater.borrow();
+                    if updater.busy() {
+                        return Ok(());
+                    }
+                    if choice == INSTALL_SELECTED {
+                        updater.releases.get(updater.selected).cloned()
+                    } else {
+                        updater.available.clone()
+                    }
+                };
+                if let Some(update) = update {
+                    if !self.config.borrow().updates.include_prereleases
+                        && !update.version.pre.is_empty()
+                    {
+                        return Ok(());
+                    }
+                    let current = semver::Version::parse(crate::BUILD_VERSION)
+                        .map_err(|error| error.to_string())?;
+                    if update.version.cmp_precedence(&current).is_le() {
+                        let mut config = self.config.borrow().clone();
+                        config.updates.automatic_install = false;
+                        config.save(&self.config_path)?;
+                        *self.config.borrow_mut() = config;
+                    }
+                    let mut updater = self.updater.borrow_mut();
+                    updater.install_requested = true;
+                    if !updater
+                        .downloaded
+                        .as_ref()
+                        .is_some_and(|download| download.version == update.version)
+                    {
+                        updater.download(update);
+                    }
+                    if updater.busy() || updater.downloaded.is_some() {
+                        self.settings.borrow_mut().close();
+                    }
+                }
+            }
+            AUTO_UPDATES | PRERELEASE_UPDATES | CHECK_AUTOMATICALLY => {
                 let mut config = self.config.borrow().clone();
                 if choice == AUTO_UPDATES {
                     config.updates.automatic_install = !config.updates.automatic_install;
-                } else {
+                } else if choice == PRERELEASE_UPDATES {
                     config.updates.include_prereleases = !config.updates.include_prereleases;
+                } else {
+                    config.updates.check_automatically = !config.updates.check_automatically;
                 }
                 config.save(&self.config_path)?;
                 *self.config.borrow_mut() = config;
                 let preferences = &self.config.borrow().updates;
                 let mut updater = self.updater.borrow_mut();
-                if choice == PRERELEASE_UPDATES || preferences.automatic_install {
-                    updater.check(false, preferences.include_prereleases);
+                if choice == PRERELEASE_UPDATES {
+                    updater.select_available(preferences.include_prereleases);
+                }
+                if preferences.check_automatically
+                    && (choice == PRERELEASE_UPDATES
+                        || preferences.automatic_install
+                        || choice == CHECK_AUTOMATICALLY)
+                {
+                    updater.check(false);
                 }
             }
             EXIT => unsafe {
@@ -846,18 +942,6 @@ fn load_icon() -> Result<HICON, String> {
         };
     }
     Err("embedded icon has no 32 px image".into())
-}
-
-fn show_error(hwnd: HWND, message: &str) {
-    let text = wide(message);
-    unsafe {
-        MessageBoxW(
-            Some(hwnd),
-            PCWSTR(text.as_ptr()),
-            w!("Volume3"),
-            MB_OK | MB_ICONERROR,
-        );
-    }
 }
 
 fn wide(value: &str) -> Vec<u16> {
