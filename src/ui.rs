@@ -405,6 +405,16 @@ impl TrayState {
     fn show_menu(&self, hwnd: HWND) -> Result<(), String> {
         *self.config.borrow_mut() = Config::load(&self.config_path)?;
         let mut devices = self.audio.devices(audio::output_flow())?;
+        let saved_device_unavailable = {
+            let config = self.config.borrow();
+            let unavailable = config
+                .active()
+                .output_device
+                .as_ref()
+                .is_some_and(|saved| !devices.iter().any(|device| &device.id == saved));
+            devices.retain(|device| !config.hidden_output_devices.contains(&device.id));
+            unavailable
+        };
         devices.sort_by(|a, b| {
             a.name
                 .to_lowercase()
@@ -437,7 +447,7 @@ impl TrayState {
                     &mut entries,
                     MenuStyle::Disabled,
                     0,
-                    "No devices found",
+                    "No visible output devices",
                     false,
                 )?;
             }
@@ -451,17 +461,15 @@ impl TrayState {
                     device.is_default,
                 )?;
             }
-            if let Some(saved) = &self.config.borrow().active().output_device {
-                if !devices.iter().any(|device| &device.id == saved) {
-                    menu_item(
-                        menu,
-                        &mut entries,
-                        MenuStyle::Disabled,
-                        0,
-                        "Saved device is unavailable",
-                        false,
-                    )?;
-                }
+            if saved_device_unavailable {
+                menu_item(
+                    menu,
+                    &mut entries,
+                    MenuStyle::Disabled,
+                    0,
+                    "Saved device is unavailable",
+                    false,
+                )?;
             }
             menu_item(menu, &mut entries, MenuStyle::Separator, 0, "", false)?;
             let legacy = unsafe { CreatePopupMenu().map_err(error)? };

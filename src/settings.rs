@@ -1,3 +1,5 @@
+mod devices;
+
 use std::{cell::RefCell, mem::size_of, path::PathBuf, rc::Rc};
 
 use windows::{
@@ -16,27 +18,31 @@ use windows::{
         },
         UI::{
             Controls::{SetWindowTheme, DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED},
-            Input::KeyboardAndMouse::{EnableWindow, VK_ESCAPE, VK_RETURN, VK_SPACE},
+            Input::KeyboardAndMouse::{EnableWindow, GetFocus, VK_ESCAPE, VK_RETURN, VK_SPACE},
+            Shell::SetWindowSubclass,
             WindowsAndMessaging::{
                 AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-                GetCursorPos, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
-                LoadCursorW, PostMessageW, RegisterClassExW, SendMessageW, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowTextW, ShowWindow, BM_SETCHECK, BS_AUTOCHECKBOX,
-                BS_OWNERDRAW, CBN_SELCHANGE, CBS_DROPDOWNLIST, CBS_HASSTRINGS, CBS_OWNERDRAWFIXED,
-                CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, ES_AUTOVSCROLL,
-                ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HICON, HMENU, IDC_ARROW, SW_HIDE,
-                SW_RESTORE, SW_SHOW, WA_ACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE,
-                WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
-                WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP,
-                WM_MEASUREITEM, WM_MOUSEMOVE, WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_BORDER,
-                WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_MINIMIZEBOX,
-                WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+                GetCursorPos, GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
+                GetWindowTextW, LoadCursorW, PostMessageW, RegisterClassExW, SendMessageW,
+                SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, BM_SETCHECK,
+                BS_AUTOCHECKBOX, BS_OWNERDRAW, CBN_SELCHANGE, CBS_DROPDOWNLIST, CBS_HASSTRINGS,
+                CBS_OWNERDRAWFIXED, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL,
+                ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, HICON, HMENU, IDC_ARROW,
+                LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_OWNERDRAWFIXED, LB_ADDSTRING,
+                LB_GETTOPINDEX, LB_RESETCONTENT, LB_SETTOPINDEX, SW_HIDE, SW_RESTORE, SW_SHOW,
+                WA_ACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CLOSE,
+                WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
+                WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEMOVE,
+                WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD,
+                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+                WS_TABSTOP, WS_VSCROLL,
             },
         },
     },
 };
 
 use crate::{
+    audio::{self, Audio, Device},
     config::Config,
     startup,
     theme::{self, circle, draw_text, fill, font, rgb, rounded},
@@ -59,6 +65,16 @@ pub(crate) const INSTALL_SELECTED: u32 = 19;
 const SELECT_VERSION: u32 = 20;
 const RELEASE_NOTES: u32 = 21;
 const UPDATE_STATUS: u32 = 22;
+const OUTPUT_DEVICES: u32 = 23;
+const TOGGLE_DEVICE: u32 = WM_APP + 2;
+const PAGE_LABELS: [&str; 3] = ["General", "Output devices", "Updates"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    General,
+    OutputDevices,
+    Updates,
+}
 
 pub struct SettingsWindow {
     hwnd: HWND,
@@ -70,9 +86,11 @@ pub struct SettingsWindow {
     body_font: HFONT,
     background: HBRUSH,
     owner: HWND,
-    updates_page: bool,
+    page: Page,
     controls: Vec<HWND>,
     versions: Vec<String>,
+    devices: Vec<Device>,
+    hovered_device: Option<usize>,
     config: Rc<RefCell<Config>>,
     updater: Rc<RefCell<Updater>>,
 }
@@ -93,9 +111,11 @@ impl SettingsWindow {
             body_font: font(14, FW_NORMAL.0 as i32),
             background: unsafe { CreateSolidBrush(rgb(20, 24, 32)) },
             owner: HWND::default(),
-            updates_page: false,
+            page: Page::General,
             controls: Vec::new(),
             versions: Vec::new(),
+            devices: Vec::new(),
+            hovered_device: None,
             config,
             updater,
         }
@@ -105,6 +125,7 @@ impl SettingsWindow {
         self.owner = owner;
         self.autostart_enabled = startup::is_enabled(&self.config_path)?;
         if !self.hwnd.0.is_null() {
+            self.refresh_devices()?;
             unsafe {
                 let _ = InvalidateRect(Some(self.hwnd), None, false);
             }
@@ -165,11 +186,11 @@ impl SettingsWindow {
                 size_of::<i32>() as u32,
             );
         }
-        if let Err(error) = self.create_update_controls() {
+        if let Err(error) = self.create_controls().and_then(|()| self.refresh_devices()) {
             self.close();
             return Err(error);
         }
-        self.refresh();
+        self.select_page(self.page);
         Ok(hwnd)
     }
 
@@ -181,7 +202,7 @@ impl SettingsWindow {
         self.hwnd
     }
 
-    fn create_update_controls(&mut self) -> Result<(), String> {
+    fn create_controls(&mut self) -> Result<(), String> {
         for (id, class, text, x, y, width, height, style) in [
             (
                 CHECK_AUTOMATICALLY,
@@ -277,6 +298,16 @@ impl SettingsWindow {
                     | WS_VSCROLL.0
                     | WS_BORDER.0,
             ),
+            (
+                OUTPUT_DEVICES,
+                w!("LISTBOX"),
+                "Output devices",
+                CONTENT_LEFT,
+                120,
+                596,
+                420,
+                (LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0,
+            ),
         ] {
             let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
             let control = unsafe {
@@ -312,13 +343,106 @@ impl SettingsWindow {
                     CHECK_UPDATES | CANCEL_UPDATE | INSTALL_SELECTED => {
                         theme::style_control(control, 0)
                     }
+                    OUTPUT_DEVICES => {
+                        let _ = SetWindowSubclass(
+                            control,
+                            Some(devices::device_cards_proc),
+                            2,
+                            self.hwnd.0 as usize,
+                        );
+                    }
                     _ => {}
                 }
                 let _ = SetWindowTheme(control, w!("DarkMode_Explorer"), None);
-                let _ = ShowWindow(control, if self.updates_page { SW_SHOW } else { SW_HIDE });
             }
         }
         Ok(())
+    }
+
+    fn refresh_devices(&mut self) -> Result<(), String> {
+        let mut devices = Audio::new()?.devices(audio::output_flow())?;
+        devices.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        unsafe {
+            let control = GetDlgItem(Some(self.hwnd), OUTPUT_DEVICES as i32)
+                .map_err(|error| error.to_string())?;
+            let top = SendMessageW(control, LB_GETTOPINDEX, None, None);
+            self.devices = devices;
+            self.hovered_device = None;
+            SendMessageW(control, LB_RESETCONTENT, None, None);
+            for device in &self.devices {
+                let text: Vec<u16> = device.name.encode_utf16().chain(Some(0)).collect();
+                if SendMessageW(
+                    control,
+                    LB_ADDSTRING,
+                    None,
+                    Some(LPARAM(text.as_ptr() as isize)),
+                )
+                .0 < 0
+                {
+                    return Err("Cannot display output devices".into());
+                }
+            }
+            SendMessageW(
+                control,
+                LB_SETTOPINDEX,
+                Some(WPARAM(top.0.max(0) as usize)),
+                None,
+            );
+            let _ = ShowWindow(
+                control,
+                if self.page == Page::OutputDevices && !self.devices.is_empty() {
+                    SW_SHOW
+                } else {
+                    SW_HIDE
+                },
+            );
+            let _ = InvalidateRect(Some(control), None, false);
+        }
+        Ok(())
+    }
+
+    fn set_device_visible(&self, index: usize, visible: bool) -> Result<(), String> {
+        let Some(device) = self.devices.get(index) else {
+            return Ok(());
+        };
+        let mut config = self.config.borrow().clone();
+        if visible {
+            config.hidden_output_devices.remove(&device.id);
+        } else {
+            config.hidden_output_devices.insert(device.id.clone());
+        }
+        config.save(&self.config_path)?;
+        *self.config.borrow_mut() = config;
+        Ok(())
+    }
+
+    fn select_page(&mut self, page: Page) {
+        self.page = page;
+        unsafe {
+            for control in &self.controls {
+                let control_page = if GetDlgCtrlID(*control) == OUTPUT_DEVICES as i32 {
+                    Page::OutputDevices
+                } else {
+                    Page::Updates
+                };
+                let _ = ShowWindow(
+                    *control,
+                    if page == control_page
+                        && (page != Page::OutputDevices || !self.devices.is_empty())
+                    {
+                        SW_SHOW
+                    } else {
+                        SW_HIDE
+                    },
+                );
+            }
+        }
+        self.refresh();
     }
 
     pub fn refresh(&mut self) {
@@ -427,6 +551,7 @@ impl SettingsWindow {
             self.hwnd = HWND::default();
             self.controls.clear();
             self.versions.clear();
+            self.devices.clear();
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 let _ = DestroyWindow(hwnd);
@@ -516,9 +641,9 @@ impl SettingsWindow {
             self.body_font,
             rgb(153, 167, 187),
         );
-        for (index, label) in ["General", "Updates"].iter().enumerate() {
+        for (index, label) in PAGE_LABELS.iter().enumerate() {
             let top = 110 + index as i32 * 50;
-            if self.updates_page == (index == 1) {
+            if self.page as usize == index {
                 rounded(
                     hdc,
                     RECT {
@@ -556,11 +681,7 @@ impl SettingsWindow {
         }
         draw_text(
             hdc,
-            if self.updates_page {
-                "Updates"
-            } else {
-                "General"
-            },
+            PAGE_LABELS[self.page as usize],
             RECT {
                 left: CONTENT_LEFT,
                 top: 29,
@@ -570,7 +691,7 @@ impl SettingsWindow {
             self.title_font,
             rgb(242, 246, 250),
         );
-        if self.updates_page {
+        if self.page == Page::Updates {
             for (text, top) in [
                 (format!("Current version: {BUILD_VERSION}"), 68),
                 ("Available versions and release notes".into(), 308),
@@ -600,7 +721,7 @@ impl SettingsWindow {
                     rgb(153, 167, 187),
                 );
             }
-        } else {
+        } else if self.page == Page::General {
             draw_text(
                 hdc,
                 "App behavior and startup.",
@@ -715,6 +836,41 @@ impl SettingsWindow {
                 self.body_font,
                 rgb(153, 167, 187),
             );
+        } else {
+            for (text, top) in [
+                ("Choose which devices appear in the tray menu.", 68),
+                (
+                    "Turn off a card to hide its device. Your audio keeps playing.",
+                    92,
+                ),
+            ] {
+                draw_text(
+                    hdc,
+                    text,
+                    RECT {
+                        left: CONTENT_LEFT,
+                        top,
+                        right: client.right - 26,
+                        bottom: top + 25,
+                    },
+                    self.body_font,
+                    rgb(153, 167, 187),
+                );
+            }
+            if self.devices.is_empty() {
+                draw_text(
+                    hdc,
+                    "No output devices connected.",
+                    RECT {
+                        left: CONTENT_LEFT,
+                        top: 160,
+                        right: client.right - 26,
+                        bottom: 190,
+                    },
+                    self.label_font,
+                    rgb(153, 167, 187),
+                );
+            }
         }
         draw_text(
             hdc,
@@ -793,13 +949,36 @@ unsafe extern "system" fn window_proc(
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     match message {
+        TOGGLE_DEVICE => {
+            let window = &*pointer;
+            if let Some(device) = window.devices.get(wparam.0) {
+                let visible = window
+                    .config
+                    .borrow()
+                    .hidden_output_devices
+                    .contains(&device.id);
+                if let Err(error) = window.set_device_visible(wparam.0, visible) {
+                    theme::show_message(hwnd, "Settings error", &error);
+                }
+                if let Ok(control) = GetDlgItem(Some(hwnd), OUTPUT_DEVICES as i32) {
+                    devices::invalidate_card(control, wparam.0);
+                }
+            }
+            return LRESULT(0);
+        }
+        WM_MEASUREITEM if wparam.0 == OUTPUT_DEVICES as usize => {
+            (*(lparam.0 as *mut MEASUREITEMSTRUCT)).itemHeight = 100;
+            return LRESULT(1);
+        }
         WM_MEASUREITEM if wparam.0 == SELECT_VERSION as usize => {
             (*(lparam.0 as *mut MEASUREITEMSTRUCT)).itemHeight = 28;
             return LRESULT(1);
         }
         WM_DRAWITEM => {
             let item = &*(lparam.0 as *const DRAWITEMSTRUCT);
-            if item.CtlID == SELECT_VERSION {
+            if item.CtlID == OUTPUT_DEVICES {
+                (&*pointer).draw_device_card(item);
+            } else if item.CtlID == SELECT_VERSION {
                 fill(
                     item.hDC,
                     item.rcItem,
@@ -842,7 +1021,7 @@ unsafe extern "system" fn window_proc(
                 (&mut *pointer).close();
                 return LRESULT(0);
             }
-            if id == 1 && !(&*pointer).updates_page {
+            if id == 1 && (&*pointer).page == Page::General && GetFocus() == hwnd {
                 if let Err(error) = (&mut *pointer).toggle() {
                     theme::show_message(hwnd, "Settings error", &error);
                 }
@@ -912,22 +1091,18 @@ unsafe extern "system" fn window_proc(
             let y = (lparam.0 >> 16) as u16 as i16 as i32;
             let mut client = RECT::default();
             let window = &mut *pointer;
-            if (12..SIDEBAR_WIDTH - 12).contains(&x) && (110..202).contains(&y) {
-                window.updates_page = y >= 160;
-                for control in &window.controls {
-                    let _ = ShowWindow(
-                        *control,
-                        if window.updates_page {
-                            SW_SHOW
-                        } else {
-                            SW_HIDE
-                        },
-                    );
-                }
-                window.refresh();
+            if (12..SIDEBAR_WIDTH - 12).contains(&x)
+                && (110..260).contains(&y)
+                && (y - 110) % 50 < 42
+            {
+                window.select_page(match (y - 110) / 50 {
+                    0 => Page::General,
+                    1 => Page::OutputDevices,
+                    _ => Page::Updates,
+                });
                 return LRESULT(0);
             }
-            if !window.updates_page
+            if window.page == Page::General
                 && GetClientRect(hwnd, &mut client).is_ok()
                 && in_card(x, y, client.right)
             {
@@ -953,7 +1128,7 @@ unsafe extern "system" fn window_proc(
             return LRESULT(0);
         }
         WM_KEYDOWN => {
-            if !(&*pointer).updates_page
+            if (&*pointer).page == Page::General
                 && (wparam.0 as u16 == VK_SPACE.0 || wparam.0 as u16 == VK_RETURN.0)
             {
                 let result = (&mut *pointer).toggle();
@@ -968,6 +1143,9 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_ACTIVATE if (wparam.0 as u32 & 0xffff) == WA_ACTIVE => {
+            if !(&*pointer).hwnd.0.is_null() {
+                let _ = (&mut *pointer).refresh_devices();
+            }
             if let Ok(enabled) = startup::is_enabled(&(&*pointer).config_path) {
                 (&mut *pointer).autostart_enabled = enabled;
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -991,4 +1169,155 @@ unsafe fn set_text(hwnd: HWND, id: u32, text: &str) {
 
 fn in_card(x: i32, y: i32, width: i32) -> bool {
     (CONTENT_LEFT..width - 26).contains(&x) && (CARD_TOP..CARD_BOTTOM).contains(&y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Graphics::Gdi::{GetUpdateRect, ValidateRect};
+    use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_DOWN;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, GWL_EXSTYLE, GWL_STYLE, LB_GETCOUNT, LB_GETTOPINDEX, LB_SETCURSEL,
+        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE, WM_LBUTTONDOWN, WM_MOUSEWHEEL,
+        WS_EX_TOOLWINDOW, WS_VISIBLE,
+    };
+
+    #[test]
+    fn device_cards_have_their_own_page_and_preserve_output() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("volume3.json");
+        let config = Rc::new(RefCell::new(Config::default()));
+        config
+            .borrow_mut()
+            .hidden_output_devices
+            .insert("disconnected-device".into());
+        config.borrow().save(&path).unwrap();
+        let updater = Rc::new(RefCell::new(Updater::new().unwrap()));
+        let module =
+            unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.unwrap();
+        register_window_class(HINSTANCE(module.0), HICON::default()).unwrap();
+        let mut window = Box::new(SettingsWindow::new(path.clone(), config.clone(), updater));
+        window.open(HWND::default()).unwrap();
+        let audio = Audio::new().unwrap();
+        let current = audio.current_device_id(audio::output_flow()).ok();
+        let control = unsafe { GetDlgItem(Some(window.hwnd), OUTPUT_DEVICES as i32) }.unwrap();
+        assert_eq!(
+            unsafe { SendMessageW(control, LB_GETCOUNT, None, None) }.0 as usize,
+            window.devices.len()
+        );
+        assert!(window.page == Page::General);
+        assert_eq!(
+            unsafe { GetWindowLongPtrW(control, GWL_STYLE) } & WS_VISIBLE.0 as isize,
+            0
+        );
+        unsafe {
+            SendMessageW(
+                window.hwnd,
+                WM_LBUTTONUP,
+                None,
+                Some(LPARAM((180 << 16) | 40)),
+            );
+        }
+        assert!(window.page == Page::OutputDevices);
+        let Some(device) = window.devices.first() else {
+            return;
+        };
+        let id = device.id.clone();
+        assert_ne!(
+            unsafe { GetWindowLongPtrW(control, GWL_STYLE) } & WS_VISIBLE.0 as isize,
+            0
+        );
+        unsafe {
+            // Windows only tracks dirty regions for visible controls; keep this window off-screen.
+            SetWindowLongPtrW(window.hwnd, GWL_EXSTYLE, WS_EX_TOOLWINDOW.0 as isize);
+            let _ = SetWindowPos(
+                window.hwnd,
+                None,
+                -10000,
+                -10000,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
+            );
+            let _ = ShowWindow(window.hwnd, SW_SHOWNOACTIVATE);
+            let mut dirty = RECT::default();
+            let _ = ValidateRect(Some(control), None);
+            SendMessageW(control, WM_MOUSEMOVE, None, Some(LPARAM((50 << 16) | 40)));
+            assert!(GetUpdateRect(control, Some(&mut dirty), false).as_bool());
+            assert_eq!((dirty.top, dirty.bottom), (0, 100));
+            let _ = ValidateRect(Some(control), None);
+            SendMessageW(control, WM_MOUSEMOVE, None, Some(LPARAM((51 << 16) | 41)));
+            assert!(!GetUpdateRect(control, None, false).as_bool());
+            if window.devices.len() > 1 {
+                SendMessageW(control, WM_MOUSEMOVE, None, Some(LPARAM((150 << 16) | 40)));
+                assert!(GetUpdateRect(control, Some(&mut dirty), false).as_bool());
+                assert_eq!((dirty.top, dirty.bottom), (0, 200));
+                let _ = ValidateRect(Some(control), None);
+                SendMessageW(control, WM_MOUSELEAVE, None, None);
+                assert!(GetUpdateRect(control, Some(&mut dirty), false).as_bool());
+                assert_eq!((dirty.top, dirty.bottom), (100, 200));
+            }
+        }
+        for index in 0..window.devices.len() {
+            unsafe {
+                SendMessageW(control, LB_SETCURSEL, Some(WPARAM(index)), None);
+                SendMessageW(control, WM_KEYDOWN, Some(WPARAM(VK_SPACE.0 as usize)), None);
+            }
+        }
+        let loaded = Config::load(&path).unwrap();
+        assert!(window
+            .devices
+            .iter()
+            .all(|device| loaded.hidden_output_devices.contains(&device.id)));
+        assert!(loaded.hidden_output_devices.contains("disconnected-device"));
+        assert_eq!(loaded.active().output_device, None);
+        assert_eq!(audio.current_device_id(audio::output_flow()).ok(), current);
+        window.close();
+        *config.borrow_mut() = loaded;
+        window.open(HWND::default()).unwrap();
+        let control = unsafe { GetDlgItem(Some(window.hwnd), OUTPUT_DEVICES as i32) }.unwrap();
+        assert_eq!(window.devices[0].id, id);
+        assert!(config.borrow().hidden_output_devices.contains(&id));
+        unsafe {
+            SendMessageW(control, LB_SETTOPINDEX, Some(WPARAM(0)), None);
+            SendMessageW(control, WM_LBUTTONDOWN, None, Some(LPARAM((50 << 16) | 40)));
+            SendMessageW(control, WM_LBUTTONUP, None, Some(LPARAM((50 << 16) | 40)));
+        }
+        assert!(!Config::load(&path)
+            .unwrap()
+            .hidden_output_devices
+            .contains(&id));
+        assert!(!config.borrow().hidden_output_devices.contains(&id));
+        unsafe {
+            SendMessageW(control, LB_SETCURSEL, Some(WPARAM(0)), None);
+            SendMessageW(control, WM_KEYDOWN, Some(WPARAM(VK_DOWN.0 as usize)), None);
+        }
+        assert!(!config.borrow().hidden_output_devices.contains(&id));
+        if window.devices.len() > 4 {
+            unsafe {
+                SendMessageW(
+                    control,
+                    WM_MOUSEWHEEL,
+                    Some(WPARAM((-360i16 as u16 as usize) << 16)),
+                    None,
+                );
+            }
+            assert!(unsafe { SendMessageW(control, LB_GETTOPINDEX, None, None) }.0 > 0);
+        }
+        window.select_page(Page::Updates);
+        assert_eq!(
+            unsafe { GetWindowLongPtrW(control, GWL_STYLE) } & WS_VISIBLE.0 as isize,
+            0
+        );
+        window.select_page(Page::General);
+        assert_eq!(
+            unsafe { GetWindowLongPtrW(control, GWL_STYLE) } & WS_VISIBLE.0 as isize,
+            0
+        );
+        window.config_path = folder.path().to_owned();
+        assert!(window.set_device_visible(0, false).is_err());
+        assert!(!config.borrow().hidden_output_devices.contains(&id));
+        assert_eq!(audio.current_device_id(audio::output_flow()).ok(), current);
+    }
 }

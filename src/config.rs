@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -123,6 +123,8 @@ pub enum OsdStyle {
 pub struct Config {
     pub active_profile: String,
     pub profiles: BTreeMap<String, Profile>,
+    /// Playback devices hidden from the tray menu; does not disable them in Windows.
+    pub hidden_output_devices: BTreeSet<String>,
     pub input: InputSettings,
     pub display: DisplaySettings,
     pub updates: UpdateSettings,
@@ -153,6 +155,7 @@ impl Default for Config {
         Self {
             active_profile: "Default".into(),
             profiles,
+            hidden_output_devices: BTreeSet::new(),
             input: InputSettings::default(),
             display: DisplaySettings::default(),
             updates: UpdateSettings::default(),
@@ -304,6 +307,26 @@ fn replace_file(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_output_devices_are_global_and_preserve_old_configs() {
+        let mut config: Config = serde_json::from_str(r#"{"active_profile":"Default"}"#).unwrap();
+        assert!(config.hidden_output_devices.is_empty());
+        config.hidden_output_devices.insert("device-1".into());
+        config
+            .hidden_output_devices
+            .insert("disconnected-device".into());
+        config.profiles.get_mut("Default").unwrap().output_device = Some("device-1".into());
+        config.profiles.insert("Cinema".into(), Profile::default());
+        config.switch("Cinema").unwrap();
+        let saved = serde_json::to_vec(&config).unwrap();
+        let mut loaded: Config = serde_json::from_slice(&saved).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(loaded.hidden_output_devices, config.hidden_output_devices);
+        loaded.switch("Default").unwrap();
+        assert_eq!(loaded.active().output_device.as_deref(), Some("device-1"));
+        assert!(loaded.hidden_output_devices.contains("device-1"));
+    }
 
     #[test]
     fn existing_update_preferences_keep_automatic_checks_enabled() {
