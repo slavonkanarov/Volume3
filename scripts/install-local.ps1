@@ -6,9 +6,6 @@ $repo = (Resolve-Path "$PSScriptRoot\..").Path
 if ($env:USERPROFILE -ne [Environment]::GetFolderPath('UserProfile')) {
     throw 'Run this script in a normal PowerShell session under your Windows account, not in a sandbox.'
 }
-if (Get-Process volume3-tray, volume3 -ErrorAction SilentlyContinue) {
-    throw 'Exit Volume3 from the tray before installing the new version.'
-}
 $installDir = Join-Path $env:ProgramFiles 'Volume3'
 $shortcutDir = [Environment]::GetFolderPath('CommonPrograms')
 $tray = Join-Path $installDir 'volume3-tray.exe'
@@ -75,8 +72,19 @@ try {
             throw "Elevated installation failed with exit code $($elevated.ExitCode). Run PowerShell as Administrator to see the error."
         }
         Write-Installation
+        Start-Process -FilePath $tray -WorkingDirectory $installDir -WindowStyle Hidden
         return
     }
+
+    Get-Process volume3-tray, volume3 -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -in @($tray, $cli) } |
+        ForEach-Object {
+            Write-Host "Stopping Volume3 (PID $($_.Id))"
+            Stop-Process -InputObject $_ -Force
+            if (-not $_.WaitForExit(10000)) {
+                throw 'Volume3 did not close in time.'
+            }
+        }
 
     $msiInstallations = @(Get-ItemProperty `
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', `
@@ -126,6 +134,11 @@ try {
     }
 
     Write-Installation
+    if (-not $SystemOnly) {
+        $desktopHandle = 0
+        $desktop = (New-Object -ComObject Shell.Application).Windows().FindWindowSW(0, $null, 8, [ref]$desktopHandle, 1)
+        $desktop.Document.Application.ShellExecute($tray, '', $installDir, 'open', 0)
+    }
 } finally {
     Pop-Location
 }

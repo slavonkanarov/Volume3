@@ -25,13 +25,13 @@ Portable builds store settings in `volume3.json` beside the executable. System i
 
 ## Install on this PC without MSI
 
-Exit Volume3 from the tray, then run this from a normal PowerShell session under your Windows account in the repository root on Windows 11. The script requests administrator permission through Windows UAC:
+Run this from a normal PowerShell session under your Windows account in the repository root on Windows 11. The script requests administrator permission through Windows UAC:
 
 ```powershell
 .\scripts\install-local.ps1
 ```
 
-The script builds the current source into both release executables and installs them with the icon, license, and README in `C:\Program Files\Volume3`. It removes any existing Volume3 MSI installation first, then creates an all-users Start menu shortcut and updates an existing current-user shortcut to point to the new tray executable. MSI is used only to remove an older MSI installation; WiX is not needed. The script needs the Rust MSVC toolchain, Visual Studio C++ Build Tools, and the Windows SDK. It does not start Volume3 or enable sign-in startup. Existing settings in `%LOCALAPPDATA%\Volume3\volume3.json` are preserved.
+The script builds the current source into both release executables and installs them with the icon, license, and README in `C:\Program Files\Volume3`. After a successful build and elevation, it forcibly stops running Volume3 processes from that installation directory and waits up to 10 seconds for each to exit before removing any existing Volume3 MSI installation and replacing files. Copies running from other directories are left alone. It then creates an all-users Start menu shortcut and updates an existing current-user shortcut to point to the new tray executable. After a successful installation, it starts Volume3 from the original PowerShell session, or through the desktop Explorer process if the script was run as administrator. The elevated `-SystemOnly` helper leaves launching to the original session. MSI is used only to remove an older MSI installation; WiX is not needed. The script needs the Rust MSVC toolchain, Visual Studio C++ Build Tools, and the Windows SDK. Existing settings in `%LOCALAPPDATA%\Volume3\volume3.json` are preserved.
 
 Like RustClip, the script assigns a development version from local stable Git tags. It uses the next patch in the `Cargo.toml` major/minor series, never below the Cargo version, followed by `-dev`. For example, tag `v0.1.5` produces `0.1.6-dev`. It prints the build version, verifies it with `volume3.exe --version`, and compares the installed executables with the build using SHA-256. It does not fetch source changes or tags; update your checkout before installing if needed. Reinstalling the same version series without new tags keeps the same development version while rebuilding the current source.
 
