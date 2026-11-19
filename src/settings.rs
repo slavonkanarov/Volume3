@@ -51,7 +51,6 @@ const CONTENT_LEFT: i32 = 238;
 const CARD_TOP: i32 = 150;
 const CARD_BOTTOM: i32 = 248;
 pub(crate) const CHECK_UPDATES: u32 = 13;
-pub(crate) const INSTALL_UPDATE: u32 = 14;
 pub(crate) const AUTO_UPDATES: u32 = 15;
 pub(crate) const PRERELEASE_UPDATES: u32 = 16;
 pub(crate) const CHECK_AUTOMATICALLY: u32 = 17;

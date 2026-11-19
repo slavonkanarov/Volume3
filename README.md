@@ -63,7 +63,7 @@ Open **Settings → Updates** to manage updates:
 - **Cancel** cancels a check or download and discards a pending download.
 - Select an available version to read its release notes, then use **Install selected version** to install it and restart. The status shows download progress and errors.
 
-The tray **Updates** submenu offers the same checking and installation preferences and a shortcut to install the newest available update. Only releases with complete packages and valid SHA-256 digests are offered. Automatic checks only propose newer versions. Installing an older or equal version turns off automatic installation to keep the chosen version.
+Update controls are available only in **Settings → Updates**. Only releases with complete packages and valid SHA-256 digests are offered. Automatic checks only propose newer versions. Installing an older or equal version turns off automatic installation to keep the chosen version.
 
 Downloads are verified against the SHA-256 digests published by GitHub Releases. The updater replaces both executables in portable and script-based installations or installs the new MSI, then restarts the tray with the same configuration path. Protected folders such as Program Files and MSI installations request administrator approval; the helper restarts the application from the original process without elevation. Cancelling approval restarts the existing version. Before installation, the configuration is copied to `<config path>.before-update`, replacing the previous backup. Older versions may not understand newer configuration formats; backups are not restored automatically.
 

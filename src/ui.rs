@@ -43,7 +43,7 @@ use crate::{
     panel::{self, Panel},
     settings::{
         self, SettingsWindow, AUTO_UPDATES, CANCEL_UPDATE, CHECK_AUTOMATICALLY, CHECK_UPDATES,
-        INSTALL_SELECTED, INSTALL_UPDATE, PRERELEASE_UPDATES,
+        INSTALL_SELECTED, PRERELEASE_UPDATES,
     },
     theme,
     updates::{Event as UpdateEvent, Updater},
@@ -78,7 +78,6 @@ struct MenuEntry {
 }
 
 struct TrayState {
-    audio: Audio,
     config: Rc<RefCell<Config>>,
     menu_open: Cell<bool>,
     panel: RefCell<Box<Panel>>,
@@ -87,6 +86,8 @@ struct TrayState {
     config_path: PathBuf,
     icon: HICON,
     taskbar_created: u32,
+    // Keep COM initialized until the panel's audio interfaces are released.
+    audio: Audio,
 }
 
 pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
@@ -100,7 +101,6 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
     let icon = load_icon()?;
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     let mut state = Box::new(TrayState {
-        audio,
         config: config.clone(),
         menu_open: Cell::new(false),
         panel: RefCell::new(Box::new(Panel::new())),
@@ -113,6 +113,7 @@ pub fn run_gui(config_path: PathBuf) -> Result<(), String> {
         config_path,
         icon,
         taskbar_created,
+        audio,
     });
 
     let module = unsafe { GetModuleHandleW(None).map_err(error)? };
@@ -503,7 +504,6 @@ impl TrayState {
                 "Settings…",
                 false,
             )?;
-            self.add_updates_menu(menu, &mut entries, &menu_info)?;
             menu_item(menu, &mut entries, MenuStyle::Action, EXIT, "Exit", false)?;
 
             let mut point = POINT::default();
@@ -530,93 +530,6 @@ impl TrayState {
         result
     }
 
-    fn add_updates_menu(
-        &self,
-        menu: windows::Win32::UI::WindowsAndMessaging::HMENU,
-        entries: &mut Vec<Box<MenuEntry>>,
-        info: &MENUINFO,
-    ) -> Result<(), String> {
-        let updater = self.updater.borrow();
-        let submenu = unsafe { CreatePopupMenu().map_err(error)? };
-        let title = updater.available.as_ref().map_or_else(
-            || "Updates".to_string(),
-            |update| format!("Update {} available", update.version),
-        );
-        if let Err(error) = unsafe { SetMenuInfo(submenu, info).map_err(error) }
-            .and_then(|_| submenu_item(menu, entries, submenu, &title))
-        {
-            unsafe {
-                let _ = DestroyMenu(submenu);
-            }
-            return Err(error);
-        }
-        if !updater.supported {
-            return menu_item(
-                submenu,
-                entries,
-                MenuStyle::Disabled,
-                0,
-                "Update this installation manually",
-                false,
-            );
-        }
-        if !updater.status.is_empty() {
-            menu_item(
-                submenu,
-                entries,
-                MenuStyle::Disabled,
-                0,
-                &updater.status,
-                false,
-            )?;
-        }
-        let preferences = &self.config.borrow().updates;
-        let style = if updater.busy() {
-            MenuStyle::Disabled
-        } else {
-            MenuStyle::Action
-        };
-        menu_item(
-            submenu,
-            entries,
-            style,
-            CHECK_UPDATES,
-            "Check for updates",
-            false,
-        )?;
-        if let Some(update) = &updater.available {
-            menu_item(
-                submenu,
-                entries,
-                style,
-                INSTALL_UPDATE,
-                &format!("Install {}", update.version),
-                false,
-            )?;
-        }
-        for (id, label, enabled) in [
-            (
-                CHECK_AUTOMATICALLY,
-                "Check automatically",
-                preferences.check_automatically,
-            ),
-            (
-                AUTO_UPDATES,
-                "Install updates automatically",
-                preferences.automatic_install,
-            ),
-            (
-                PRERELEASE_UPDATES,
-                "Include prereleases",
-                preferences.include_prereleases,
-            ),
-        ] {
-            let label = format!("{label}: {}", if enabled { "On" } else { "Off" });
-            menu_item(submenu, entries, style, id, &label, false)?;
-        }
-        Ok(())
-    }
-
     fn handle_choice(
         &self,
         hwnd: HWND,
@@ -637,17 +550,13 @@ impl TrayState {
             }
             CHECK_UPDATES => self.updater.borrow_mut().check(true),
             CANCEL_UPDATE => self.updater.borrow_mut().cancel(),
-            INSTALL_UPDATE | INSTALL_SELECTED => {
+            INSTALL_SELECTED => {
                 let update = {
                     let updater = self.updater.borrow();
                     if updater.busy() {
                         return Ok(());
                     }
-                    if choice == INSTALL_SELECTED {
-                        updater.releases.get(updater.selected).cloned()
-                    } else {
-                        updater.available.clone()
-                    }
+                    updater.releases.get(updater.selected).cloned()
                 };
                 if let Some(update) = update {
                     if !self.config.borrow().updates.include_prereleases

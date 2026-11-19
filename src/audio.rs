@@ -87,7 +87,11 @@ impl MixerApp {
 
 pub struct Audio {
     enumerator: IMMDeviceEnumerator,
+    // Release the enumerator before uninitializing COM.
+    _apartment: ComApartment,
 }
+
+struct ComApartment;
 
 impl Audio {
     pub fn new() -> Result<Self, String> {
@@ -95,9 +99,13 @@ impl Audio {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED)
                 .ok()
                 .map_err(err)?;
+            let apartment = ComApartment;
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(err)?;
-            Ok(Self { enumerator })
+            Ok(Self {
+                enumerator,
+                _apartment: apartment,
+            })
         }
     }
 
@@ -414,10 +422,22 @@ impl Audio {
     }
 }
 
-impl Drop for Audio {
+impl Drop for ComApartment {
     fn drop(&mut self) {
         unsafe {
             CoUninitialize();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Audio;
+
+    #[test]
+    fn audio_can_be_reinitialized_after_cleanup() {
+        for _ in 0..2 {
+            drop(Audio::new().unwrap());
         }
     }
 }
